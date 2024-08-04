@@ -41,31 +41,17 @@ local function DrawMenu()
     end
 
     if Lbox_Menu_Open == true and ImMenu.Begin("Cheater Detection", true) then
-
         -- Tabs for different sections
         ImMenu.BeginFrame(1)
-            if ImMenu.Button("Main") then
-                G.Menu.Tabs.Main = true
-                G.Menu.Tabs.Visuals = false
-                G.Menu.Tabs.PlayerList = false
-            end
-            if ImMenu.Button("Visuals") then
-                G.Menu.Tabs.Main = false
-                G.Menu.Tabs.Visuals = true
-                G.Menu.Tabs.PlayerList = false
-            end
-            if ImMenu.Button("PlayerList") then
-                G.Menu.Tabs.Main = false
-                G.Menu.Tabs.Visuals = false
-                G.Menu.Tabs.PlayerList = true
-            end
+            local tabs = {"Main", "Visuals", "AutoVote"}
+            G.Menu.currentTab = ImMenu.TabControl(tabs, G.Menu.currentTab)
         ImMenu.EndFrame()
 
         draw.SetFont(Fonts.Verdana)
         draw.Color(255, 255, 255, 255)
 
             -- Main Section
-            if G.Menu.Tabs.Main then
+            if G.Menu.currentTab == 1 then
                 local Main = G.Menu.Main
 
                 -- Strike Limit Slider
@@ -78,6 +64,13 @@ local function DrawMenu()
                     Main.AimbotDetection.Enable = ImMenu.Checkbox("aimbot ", Main.AimbotDetection.Enable)
                     if Main.AimbotDetection.Enable == true then
                         Main.AimbotDetection.MAXfov = ImMenu.Slider("Aimbot Fov", Main.AimbotDetection.MAXfov, 1, 180)
+                    end
+                ImMenu.EndFrame()
+
+                ImMenu.BeginFrame(1)
+                    Main.WarpDetection.Enable = ImMenu.Checkbox("Warp Detection ",  Main.WarpDetection.Enable)
+                    if Main.WarpDetection.Enable == true then
+                        Main.WarpDetection.MinWarp = ImMenu.Slider("Min Warp ticks ", Main.WarpDetection.MinWarp, 2, 24)
                     end
                 ImMenu.EndFrame()
 
@@ -104,15 +97,18 @@ local function DrawMenu()
 
                 -- Menu
                 ImMenu.BeginFrame(1)
+                    Main.AutoMark = ImMenu.Checkbox("Auto Mark", Main.AutoMark)
+                ImMenu.EndFrame()
+
+                ImMenu.BeginFrame(1)
                     Main.debug = ImMenu.Checkbox("Debug", Main.debug)
                 ImMenu.EndFrame()
 
                 G.Menu.Main = Main --update changes
             end
-           
 
             -- Visuals Section
-            if G.Menu.Tabs.Visuals then
+            if G.Menu.currentTab == 2 then
                 ImMenu.BeginFrame(1)
                     G.Menu.Visuals.Cheater_Tags = ImMenu.Checkbox("Draw Tags", G.Menu.Visuals.Cheater_Tags)
                     G.Menu.Visuals.Chat_Prefix = ImMenu.Checkbox("Chat_Prefix", G.Menu.Visuals.Chat_Prefix)
@@ -120,7 +116,34 @@ local function DrawMenu()
 
                 ImMenu.BeginFrame(1)
                     G.Menu.Visuals.partyCallaut = ImMenu.Checkbox("Party Callout", G.Menu.Visuals.partyCallaut)
-                    G.Menu.Visuals.AutoMark = ImMenu.Checkbox("Auto Mark", G.Menu.Visuals.AutoMark)
+                ImMenu.EndFrame()
+            end
+
+            --autovote
+            if G.Menu.currentTab == 3 then
+                --autovote
+                ImMenu.BeginFrame(1)
+                    G.Menu.AutoVote.Enable = ImMenu.Checkbox("AutoVote", G.Menu.AutoVote.Enable)
+                    if G.Menu.AutoVote.Enable then
+                        G.Menu.AutoVote.intent.cheater = ImMenu.Checkbox("Cheater", G.Menu.AutoVote.intent.cheater)
+                        G.Menu.AutoVote.intent.legit = ImMenu.Checkbox("legit", G.Menu.AutoVote.intent.legit)
+                    end
+                ImMenu.EndFrame()
+
+                --Vote Reveal
+                ImMenu.BeginFrame(1)
+                    G.Menu.AutoVote.Vote_Reveal.Enable = ImMenu.Checkbox("Vote Reveal" , G.Menu.AutoVote.Vote_Reveal.Enable)
+
+                if G.Menu.AutoVote.Vote_Reveal.Enable then
+                --Reveal options
+                    G.Menu.AutoVote.Vote_Reveal.PartyChat = ImMenu.Checkbox("Party Chat", G.Menu.AutoVote.Vote_Reveal.PartyChat)
+                    G.Menu.AutoVote.Vote_Reveal.Console = ImMenu.Checkbox("Console", G.Menu.AutoVote.Vote_Reveal.Console)
+                end
+                ImMenu.EndFrame()
+
+                --Vote anouncer
+                ImMenu.BeginFrame(1)
+                    G.Menu.AutoVote.Vote_Anouncer = ImMenu.Checkbox("Vote Anouncer",  G.Menu.AutoVote.Vote_Anouncer)
                 ImMenu.EndFrame()
             end
 
@@ -158,9 +181,6 @@ local function DrawMenu()
                     end
                 end
             end]]
-
-            -- File Browser Section
-            --local selectedFile = ImMenu.FileBrowser()
             ImMenu.End()
         end
     end

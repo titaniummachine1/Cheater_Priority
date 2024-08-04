@@ -60,6 +60,8 @@ function Database.LoadDatabase()
 
         if decodeErr then
             print("Error loading database:", decodeErr)
+            G.DataBase = {}
+            Database.SaveDatabase()
         else
             printc(0, 255, 140, 255, "[" .. os.date("%H:%M:%S") .. "] Loaded Database from " .. tostring(filepath))
             G.DataBase = loadedDatabase or {}

@@ -15,7 +15,8 @@ local Database = require("Cheater_Detection.Database")
 local Detections = require("Cheater_Detection.Detections")
 require("Cheater_Detection.Visuals") --wake up the visuals
 require("Cheater_Detection.Modules.EventHandler") --wake up the visuals
-require("Cheater_Detection.Modules.AutoVote") --wake up the visuals
+--require("Cheater_Detection.Modules.PlayerTags") --chat tags based on who player is
+--require("Cheater_Detection.Modules.AutoVote") --wake up the visuals
 local Menu = require("Cheater_Detection.Menu")--wake up the menu
 
 --[[ Variables ]]
@@ -25,7 +26,6 @@ local WPlayer, PR = TF2.WPlayer, TF2.PlayerResource
 Config.LoadCFG() --load config on load of script
 Database.LoadDatabase() --load database inicialy to have stable databse first before loadign imports
 Database.importDatabase() --import the database after loading main one to avoid geting trolled by empty imports
-
 
 playerlist.SetPriority(G.pLocal, 0) --debug
 
@@ -114,6 +114,3 @@ callbacks.Unregister("CreateMove", "Cheater_detection")                     -- u
 
 --[[ Register callbacks ]]--
 callbacks.Register("CreateMove", "Cheater_detection", OnCreateMove)        -- register the "CreateMove" callback
-
---[[ Play sound when loaded ]]--
-client.Command('play "ui/buttonclick"', true) -- Play the "buttonclick" sound when the script is loaded

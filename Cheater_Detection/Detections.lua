@@ -52,7 +52,7 @@ function Detections.StrikePlayer(reason, player)
         G.PlayerData[steamId].info.Strikes = G.PlayerData[steamId].info.Strikes + 1
 
         -- If the player has reached the strike limit, mark them as a cheater
-        if G.PlayerData[steamId].info.Strikes >= G.Menu.Main.StrikeLimit then
+        if G.PlayerData[steamId].info.Strikes >= G.Menu.Main.StrikeLimit or reason == "Known Cheater" then
             if not Common.IsCheater(player) then
                 print(string.format("[CD] %s is cheating", player:GetName()))
                 client.ChatPrintf(string.format("\x04[CD] \x03%s \x01is\x07ff0019 Cheating\x01! \x01(\x04%s\x01)", player:GetName(), reason))
@@ -76,7 +76,7 @@ function Detections.StrikePlayer(reason, player)
                 Database.SaveDatabase(G.DataBase)
 
                 -- Auto mark
-                if G.Menu.Visuals.AutoMark and player ~= G.pLocal then
+                if G.Menu.Main.AutoMark and player ~= G.pLocal then
                     playerlist.SetPriority(player, 10)
                 end
             else
@@ -86,7 +86,7 @@ function Detections.StrikePlayer(reason, player)
             client.ChatPrintf(string.format("\x04[CD] \x03%s\x01 is \x07ffd500Suspicious \x01(\x04%s\x01)", player:GetName(), reason))
 
             -- Auto mark
-            if G.Menu.Visuals.AutoMark and player ~= G.pLocal then
+            if G.Menu.Main.AutoMark and player ~= G.pLocal then
                 playerlist.SetPriority(player, 5)
             end
         end
@@ -159,8 +159,9 @@ end
 function Detections.KnownCheater(entity)
     if Common.IsCheater(Common.GetSteamID64(entity)) then
         Detections.StrikePlayer("Known Cheater", entity)
-        return
+        return true
     end
+    return false
 end
 
 function Detections.CheckBunnyHop(pEntity, entity)
@@ -236,7 +237,6 @@ function Detections.CheckPacketChoke(pEntity, entity)
         end
     end
 end
-
 function Detections.CheckSequenceBurst(pEntity, entity)
     if not G.Menu.Main.WarpDetection.Enable then return false end
 
@@ -252,7 +252,7 @@ function Detections.CheckSequenceBurst(pEntity, entity)
     -- Initialize record for the player if it doesn't exist
     local record = G.PlayerData[steamId]
     if not record then
-        record = table.deepcopy(G.DefaultPlayerData)
+        record = G.DefaultPlayerData
         G.PlayerData[steamId] = record
     end
 
@@ -260,7 +260,9 @@ function Detections.CheckSequenceBurst(pEntity, entity)
     record.SimTimes = record.SimTimes or {}
     record.StdDevList = record.StdDevList or {}
 
+    -- Convert simulation time to ticks
     local simTime = pEntity:GetSimulationTime()
+    simTime = Common.Conversion.Time_to_Ticks(simTime)
     table.insert(record.SimTimes, simTime) -- Add the current simulation time to the queue
 
     if #record.SimTimes > 33 then
@@ -270,7 +272,7 @@ function Detections.CheckSequenceBurst(pEntity, entity)
     local deltaTicks = {}
     for i = 2, #record.SimTimes do
         local delta = record.SimTimes[i] - record.SimTimes[i - 1]
-        table.insert(deltaTicks, Conversion.Time_to_Ticks(delta))
+        table.insert(deltaTicks, delta)
     end
 
     if #deltaTicks < 30 then return false end -- Ensure there are enough delta ticks for analysis
@@ -293,26 +295,29 @@ function Detections.CheckSequenceBurst(pEntity, entity)
     -- Clamp standard deviation to a minimum of -132 to handle specific check
     standardDeviation = math.max(-132, standardDeviation)
 
-    -- Check if the current tick interval is faster than the expected interval
+    -- Check if the current tick interval is faster than the expected interval with tolerance
     local currentTickCount = globals.TickCount()
-    local currentOsTime = os.time()
+    local tolerance = 13 -- Adjust tolerance value as needed
 
-    if not record.LastTickCount or not record.LastOsTime then
+    if not record.LastTickCount then
         record.LastTickCount = currentTickCount
-        record.LastOsTime = currentOsTime
     else
         local tickInterval = globals.TickInterval()
-        local expectedTickCountInterval = (currentOsTime - record.LastOsTime) / tickInterval
+        local expectedTickCountInterval = (currentTickCount - record.LastTickCount) / tickInterval
 
-        if (currentTickCount - record.LastTickCount) < expectedTickCountInterval then
-            Log:Warn("Detected faster tick interval, possible time warp detected for player %s", pEntity:GetName() or "nil")
+        if math.abs(currentTickCount - record.LastTickCount) < expectedTickCountInterval + tolerance then
             record.LastTickCount = currentTickCount
-            record.LastOsTime = currentOsTime
             return false -- The Lua script running person may be warping time, do not strike for sequence burst
         end
 
         record.LastTickCount = currentTickCount
-        record.LastOsTime = currentOsTime
+    end
+
+    -- Restart when local player warps
+    if warp.IsWarping() and G.Menu.Main.debug == false then
+        record = G.DefaultPlayerData
+        G.PlayerData[steamId] = record
+        return
     end
 
     -- Sequence burst detection logic using the clamped standard deviation
@@ -328,7 +333,6 @@ function Detections.CheckSequenceBurst(pEntity, entity)
 
     return false -- Player is not using a sequence burst exploit
 end
-
 
 -- Function to predict the eye angle two ticks ahead
 function Detections.PredictEyeAngleTwoTicksAhead(idx, currentAngle)

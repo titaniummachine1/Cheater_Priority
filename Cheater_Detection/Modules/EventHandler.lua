@@ -3,22 +3,39 @@ local EventHandler = {}
 
 --[[ Imports ]]
 local Common = require("Cheater_Detection.Common")
-local Config = require("Cheater_Detection.Config")
+local Detections = require("Cheater_Detection.Detections")
 local G = require("Cheater_Detection.Globals")
 
-local Lib = Common.Lib
+--local Log = Common.Log
 
-local TF2 = Common.TF2
-local Math, Conversion = Common.Math, Common.Conversion
-local WPlayer, PR = TF2.WPlayer, TF2.PlayerResource
-local Helpers = Common.Helpers
-local Log = Common.Log
+local classNames = {
+    [1] = "Scout",
+    [2] = "Sniper",
+    [3] = "Soldier",
+    [4] = "Demoman",
+    [5] = "Medic",
+    [6] = "Heavy",
+    [7] = "Pyro",
+    [8] = "Spy",
+    [9] = "Engineer"
+}
+
+-- Global variables
+local options = { 'Yes', 'No'}
+
+--[[debug]]
+client.Command("sv_vote_issue_kick_allowed 1", true) -- enable cheats"sv_cheats 1"
+client.Command("cl_vote_ui_active_after_voting 1", true) -- enable cheats"sv_cheats 1"
+client.Command("sv_vote_creation_timer 1", true) -- enable cheats"sv_cheats 1"
+client.Command("sv_vote_creation_timer 1", true) -- enable cheats"sv_cheats 1"
+client.Command("sv_vote_failure_timer 1", true) -- enable cheats"sv_cheats 1"
+
 
 -- Event hook function
 local function event_hook(ev)
     local eventName = ev:GetName()
 
-    if (eventName == "player_changeclass") and G.Menu.Visuals.Class_Change_Reveal.Enable then
+    if G.Menu.Visuals.Class_Change_Reveal.Enable and (eventName == "player_changeclass") then
         local player = entities.GetByUserID(ev:GetInt("userid"))
         if (player == nil) then return end
 
@@ -30,17 +47,6 @@ local function event_hook(ev)
         end
 
         local classNumber = ev:GetInt("class")
-        local classNames = {
-            [1] = "Scout",
-            [2] = "Sniper",
-            [3] = "Soldier",
-            [4] = "Demoman",
-            [5] = "Medic",
-            [6] = "Heavy",
-            [7] = "Pyro",
-            [8] = "Spy",
-            [9] = "Engineer"
-        }
         local className = classNames[classNumber] or "Unknown Class"
         local text = string.format("\x04[CD] \x03%s\x01 changed class to \x04%s", playerName, className)
         client.ChatPrintf(text)
@@ -55,20 +61,19 @@ local function event_hook(ev)
         return
     end
 
-    if (eventName == "player_connect") then
-        local player = entities.GetByUserID(ev:GetInt("userid"))
+    if (eventName == "player_connect") or (eventName == "player_spawn") then
+            local UserID = (ev:GetInt("userid"))
+        if (UserID == nil) then return end
+            local player = entities.GetByUserID(UserID)
         if (player == nil) then return end
 
+        local player = entities.GetByUserID(UserID)
         local playerName = player:GetName()
+
         if Common.IsFriend(player) then return end --ignore friends
 
-        if G.Menu.Visuals.Class_Change_Reveal.EnemyOnly
-        and G.pLocal:GetTeamNumber() == player:GetTeamNumber() then --ignore team
-            return
-        end
-
         --run cehck for backgreound in database
-        Detections.KnownCheater(player_spawned)
+        Detections.KnownCheater(player)
         return
     end
 
@@ -113,19 +118,6 @@ local function event_hook(ev)
         end
     end
 
-    -- Bot Name Checks and Cheater name checks
-    if (eventName == "player_spawn") then
-        local player = entities.GetByUserID(ev:GetInt("userid"))
-        if (player == nil) then return end
- 
-        -- Skip if friend
-        if Common.IsFriend(player) then return end
-
-        --run cehck for backgreound in database
-        Detections.KnownCheater(player)
-        return
-    end
-
     if (eventName == "teamplay_round_win") or (eventName == "world_status_changed") then
         --reset playerdata to not crash game after long sesion
         G.PlayerData = {}
@@ -165,6 +157,61 @@ local function event_hook(ev)
         return
     end
 end
+
+-- Function to handle user message vote starts
+local function handleUserMessageVoteStart(msg)
+    if not (msg:GetID() == VoteStart) then return end --fix the code working every time someone sends any mesage
+
+    local team = msg:ReadByte()
+    local voteIdx = msg:ReadInt(32)
+    local entIdx = msg:ReadByte()
+    local dispStr = msg:ReadString(64)
+    local detailsStr = msg:ReadString(64)
+    local target = msg:ReadByte() >> 1 --index
+
+    local playerInfo = client.GetPlayerInfo(target)  -- Retrieve player information
+
+    --ent0 is caster ent1 is victim
+    local ent0, ent1 = entities.GetByIndex(entIdx), entities.GetByIndex(target)
+    local me = entities.GetLocalPlayer()
+
+    -- Format the player name more clearly
+    local playerName = playerInfo and playerInfo.Name or "[unknown]"
+
+    if G.Menu.AutoVote.Vote_Anouncer and ent0 == me and Common.IsCheater(Common.GetSteamID64(ent1)) then -- Check if the local player initiated the vote
+        --client.ChatPrintf(string.format('\x01Initiated vote against %s (%s) "vote option%d" (%s)', playerName, playerInfo.SteamID, voteInt, dispStr))
+        client.Command('say "Attention: ' .. playerName .. ' is suspected of Cheating. Vote F1."', true)
+    elseif G.Menu.AutoVote.Enabled and ent0 ~= me and ent1 ~= me then --respond to vote field
+        local voteInt = 2 -- Default vote is no
+        local steamID = Common.GetSteamID64(ent1)
+
+        -- Check if the target is a friend
+        if G.Menu.AutoVote.intent.friend and Common.IsFriend(target) then
+            voteInt = 2  -- Always vote no if the target is a friend
+        else
+            -- Check if the target is a cheater
+            if G.Menu.AutoVote.intent.cheater and Common.IsCheater(steamID) then
+                voteInt = 1  -- Vote yes if the target is a cheater
+            end
+
+            -- Check if the target is a bot
+            if G.Menu.AutoVote.intent.bot and G.DataBase[steamID].Cause == "Bot" then
+                voteInt = 1  -- Vote yes if the target is a bot
+            end
+
+            -- Manual intent override for legit players
+            if G.Menu.AutoVote.intent.legit and not Common.IsCheater(steamID) and G.DataBase[steamID].Cause ~= "Bot" then
+                voteInt = 1 -- Vote yes if intent is set to legit and the player is neither a cheater nor a bot
+            end
+        end
+
+        client.Command(string.format('vote %d option%d', voteIdx, voteInt), true)
+    end
+end
+
+-- Register and unregister callbacks for clean setup
+callbacks.Unregister('DispatchUserMessage', 'AutoVoteCD_DispatchUserMessage') --unregister callbacks for clean setup
+callbacks.Register('DispatchUserMessage', 'AutoVoteCD_DispatchUserMessage', handleUserMessageVoteStart) -- Register user messages hook will catch anynform of message besides vc
 
 callbacks.Unregister("FireGameEvent", "CD_event_hook")                 -- unregister the "FireGameEvent" callback
 callbacks.Register("FireGameEvent", "CD_event_hook", event_hook)         -- register the "FireGameEvent" callback

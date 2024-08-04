@@ -71,11 +71,7 @@ Globals.defaultRecord = {
 }
 
 Globals.Default_Menu = {
-    Tabs = {
-        Main = true,
-        Visuals = false,
-        playerlist = false,
-    },
+    currentTab = 1,
 
     Main = {
         StrikeLimit = 5,
@@ -84,7 +80,8 @@ Globals.Default_Menu = {
             MaxChoke = 22,
         },
         WarpDetection = {
-            Enable = true,
+            Enable = false,
+            MinWarp = 13,
         },
         BhopDetection = {
             Enable = true,
@@ -94,26 +91,17 @@ Globals.Default_Menu = {
             Enable = true,
             MAXfov = 20,
         },
-        AutoVote = false,
         AntyAimDetection = true,
         DuckSpeedDetection = true,
+        AutoMark = true,
         debug = false,
     },
 
     Visuals = {
-        AutoMark = true,
         partyCallaut = true,
         Chat_Prefix = true,
         Cheater_Tags = true,
-        Vote_Reveal = {
-            Enable = true,
-            TargetTeam = {
-                MyTeam = false,
-                enemyTeam = true,
-            },
-            PartyChat = true,
-            Console = true,
-        },
+        JoinWarning = true,
         Class_Change_Reveal = {
             Enable = true,
             EnemyOnly = true,
@@ -122,6 +110,25 @@ Globals.Default_Menu = {
         },
         Debug = false,
     },
+    AutoVote = {
+        Enable = true,
+        intent = {
+            legit = true,
+            cheater = true,
+            bot = true,
+            friend = false,
+        },
+        Vote_Reveal = {
+            Enable = true,
+            TargetTeam = {
+                MyTeam = true,
+                enemyTeam = true,
+            },
+            PartyChat = true,
+            Console = true,
+        },
+        Chat_notify = true,
+    }
 }
 
 Globals.Menu = Globals.Default_Menu

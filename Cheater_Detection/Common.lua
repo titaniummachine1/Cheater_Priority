@@ -4,6 +4,11 @@ local Common = {}
 
 pcall(UnloadLib) -- if it fails then forget about it it means it wasnt loaded in first place and were clean
 
+-- Unload the module if it's already loaded
+if package.loaded["ImMenu"] then
+    package.loaded["ImMenu"] = nil
+end
+
 local libLoaded, Lib = pcall(require, "LNXlib")
 assert(libLoaded, "LNXlib not found, please install it!")
 assert(Lib.GetVersion() >= 1.0, "LNXlib version is too old, please update it!")
@@ -139,12 +144,15 @@ end
 --[[ Callbacks ]]
 local function OnUnload() -- Called when the script is unloaded
     UnloadLib() --unloading lualib
-    client.Command('play "ui/buttonclickrelease"', true) -- Play the "buttonclickrelease" sound
+    engine.PlaySound("hl1/fvox/deactivated.wav") --deactivated
 end
 
 --[[ Unregister previous callbacks ]]--
 callbacks.Unregister("Unload", "CD_Unload")                                -- unregister the "Unload" callback
 --[[ Register callbacks ]]--
 callbacks.Register("Unload", "CD_Unload", OnUnload)                         -- Register the "Unload" callback
+
+--[[ Play sound when loaded ]]--
+engine.PlaySound("hl1/fvox/activated.wav")
 
 return Common
