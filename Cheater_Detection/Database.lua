@@ -4,7 +4,6 @@ local G = require("Cheater_Detection.Globals")
 
 local Database = {}
 
---local Notify = Common.Notify
 local Json = Common.Json
 local Log = Common.Log
 
@@ -16,23 +15,18 @@ local folder_name = string.format([[Lua %s]], Lua__fileName)
 
 function Database.GetFilePath()
     local success, fullPath = filesystem.CreateDirectory(folder_name)
-    return tostring(fullPath .. "/config.cfg")
+    return tostring(fullPath .. "/database.json")
 end
 
 function Database.SaveDatabase(DataBaseTable)
-    -- Use the provided DataBaseTable or fallback to G.DataBase or an empty table
     DataBaseTable = DataBaseTable or G.DataBase or {}
-
-    -- Get the file path and replace "config.cfg" with "database.json"
-    local filepath = Database.GetFilePath():gsub("config.cfg", "database.json")
-
-    -- Attempt to open the file in write mode
+    local filepath = Database.GetFilePath()
     local file, err = io.open(filepath, "w")
 
     if file then
         -- Create a new table to store unique records
         local uniqueDataBase = {}
-  
+
         -- Iterate over the database table
         for steamId, data in pairs(DataBaseTable) do
             -- If the record doesn't exist in the unique database, add it
@@ -46,20 +40,16 @@ function Database.SaveDatabase(DataBaseTable)
 
         -- Write the serialized database to the file
         file:write(serializedDatabase)
-
-        -- Close the file
         file:close()
 
-        -- Print a success message with a timestamp
-        printc(255, 183, 0, 255, "["..os.date("%H:%M:%S").."] Saved Database to ".. tostring(filepath))
+        printc(255, 183, 0, 255, "[" .. os.date("%H:%M:%S") .. "] Saved Database to " .. tostring(filepath))
     else
-        -- Print the error message if file opening failed
         print("Failed to save database. Error: " .. tostring(err))
     end
 end
 
 function Database.LoadDatabase()
-    local filepath = Database.GetFilePath():gsub("config.cfg", "database.json")
+    local filepath = Database.GetFilePath()
     local file, err = io.open(filepath, "r")
 
     if file then
@@ -71,7 +61,7 @@ function Database.LoadDatabase()
         if decodeErr then
             print("Error loading database:", decodeErr)
         else
-            printc(0, 255, 140, 255, "["..os.date("%H:%M:%S").."] Loaded Database from ".. tostring(filepath))
+            printc(0, 255, 140, 255, "[" .. os.date("%H:%M:%S") .. "] Loaded Database from " .. tostring(filepath))
             G.DataBase = loadedDatabase or {}
         end
     else
@@ -80,56 +70,74 @@ function Database.LoadDatabase()
         Database.SaveDatabase()
     end
 end
-
-
 -- Enhance data update checking and handling
 function Database.updateDatabase(steamID64, playerData)
     local existingData = G.DataBase[steamID64]
     if existingData then
-        for key, value in pairs(playerData) do
-            existingData[key] = value
+        -- Only update fields if they are not nil
+        if playerData.Name and playerData.Name ~= "Unknown" then
+            existingData.Name = playerData.Name
         end
-        return
+        if playerData.cause then
+            existingData.cause = playerData.cause
+        end
+        if playerData.date then
+            existingData.date = playerData.date
+        end
+    else
+        playerlist.SetPriority(steamID64, 10)
+        G.DataBase[steamID64] = playerData
     end
-    G.DataBase[steamID64] = playerData
 end
 
 -- Utility function to trim whitespace from both ends of a string
 local function trim(s)
-    return s:match('^%s*(.*%S)') or ''
+    return s:match('^%s*(.-)%s*$') or ''
 end
 
--- Function to process raw ID data
+-- Function to process raw ID data, handling SteamID64 and SteamID formats
 function Database.processRawIDs(content)
+    local date = os.date("%Y-%m-%d %H:%M:%S")
     for line in content:gmatch("[^\r\n]+") do
-        local steamID = trim(line)  -- Use the newly defined trim function
-        if steamID:match("^%d+$") then
-            if steamID:len() > 10 then
-                Database.updateDatabase(steamID, {
-                    Name = "Unknown", cause = "Known Cheater", date = os.date("%Y-%m-%d %H:%M:%S")
-                })
-            else
-                local steam3 = Common.FromSteamid32To64(steamID)
-                local steamID64 = steam.ToSteamID64(steam3)
+        line = trim(line)
+        if not line:match("^%-%-") then  -- Skip comment lines
+            local steamID64
+            if line:match("^%d+$") then
+                steamID64 = line
+            elseif line:match("STEAM_0:%d:%d+") then
+                steamID64 = steam.ToSteamID64(line)
+            elseif line:match("^%[U:1:%d+%]$") then
+                steamID64 = steam.ToSteamID64(line)
+            end
+            if steamID64 then
                 Database.updateDatabase(steamID64, {
-                    Name = "Unknown", cause = "Known Cheater", date = os.date("%Y-%m-%d %H:%M:%S")
+                    Name = "Unknown",
+                    cause = "Known Cheater",
+                    date = date,
                 })
             end
         end
     end
 end
 
-
 -- Process each item in the imported data
 function Database.processImportedData(data)
     if data and data.players then
         for _, player in ipairs(data.players) do
             local steamID64
+            local playerName = player.last_seen.player_name or "Unknown"
+
+            -- Set the name to "NN" if it is empty or too short
+            if not playerName or playerName == "" or #playerName < 3 then
+                playerName = "Unknown"
+            end
+
             local playerDetails = {
-                Name = player.name or "NN",
-                cause = (player.attributes and table.concat(player.attributes, ", ")) or player.cause or "Known Cheater",
-                date = player.date or os.date("%Y-%m-%d %H:%M:%S")
+                Name = playerName,
+                cause = (player.attributes and table.concat(player.attributes, ", ")) or "Known Cheater",
+                date = os.date("%Y-%m-%d %H:%M:%S", player.last_seen.time)
             }
+
             if player.steamid:match("^%[U:1:%d+%]$") then
                 steamID64 = steam.ToSteamID64(player.steamid)
             elseif player.steamid:match("^%d+$") then
@@ -138,6 +146,7 @@ function Database.processImportedData(data)
             else
                 steamID64 = player.steamid  -- Already SteamID64
             end
+
             Database.updateDatabase(steamID64, playerDetails)
         end
     end
@@ -154,22 +163,16 @@ function Database.readFromFile(filePath)
     return content
 end
 
+-- Import and process database files
 function Database.importDatabase()
-    -- Get the base directory, ensuring that the path ends with a separator.
-    local baseFilePath = Database.GetFilePath():gsub("config%.cfg", "")  -- Make sure to escape the dot in "config.cfg".
-
-    -- Append the 'import/' folder path correctly.
-    local importPath = baseFilePath .. "import/"
+    local baseFilePath = Database.GetFilePath():gsub("database.json", "")  -- Ensure the correct base path
+    local importPath = baseFilePath .. "/import/"
 
     -- Ensure the import directory exists
-    local success, directoryPath = filesystem.CreateDirectory(importPath)
-    if not directoryPath then
-        print("Failed to create or access import directory:", directoryPath)
-        return
-    end
+    filesystem.CreateDirectory(importPath)
 
     -- Enumerate all files in the import directory
-    filesystem.EnumerateDirectory(importPath, function(filename, attributes)
+    filesystem.EnumerateDirectory(importPath .. "/*", function(filename, attributes)
         local fullPath = importPath .. filename
         local content = Database.readFromFile(fullPath)
         if content then
