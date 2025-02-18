@@ -10,7 +10,7 @@ end
 --------------------------------------------------------------------------------------
 --Library loading--
 --------------------------------------------------------------------------------------
-
+--[[
 -- Function to download content from a URL
 local function downloadFile(url)
     local body = http.Get(url)
@@ -19,57 +19,7 @@ local function downloadFile(url)
     end
     return body
 end
-
--- Load and validate library
-local function loadlib(libName, libURL)
-    if libName == "LNXlib" then
-        -- Download and load LNXlib
-        local libContent = downloadFile(libURL)
-        -- Execute directly and assign globally
-        lnxLib = assert(load(libContent))()
-        _G.lnxLib = lnxLib -- Make it global
-
-        -- Allow require("lnxLib") to return global
-        package.preload["lnxLib"] = function()
-            return lnxLib
-        end
-
-        return lnxLib
-    else
-        -- For ImMenu, load normally but modify its code first
-        local libContent = downloadFile(libURL)
-        if libName == "ImMenu" then
-            -- Replace the header but keep rest of the code
-            libContent = libContent:gsub(
-                ".-\n\nlocal Fonts",  -- Match everything up to "local Fonts"
-                '--[[ ImMenu ]]--\n\nlocal lnxLib = _G.lnxLib\nlocal Fonts'  -- Replace with our simple header
-            )
-        end
-
-        -- Execute modified code and capture return value
-        local libFunction = assert(load(libContent))
-        return libFunction() -- Return the module table
-    end
-end
-
---why
-local latestLNXlib = "https://" .. "github.com/lnx00/Lmaobox-Library/releases/latest/download/lnxLib.lua"
-local LatestImMenu = "https://" .. "raw.githubusercontent.com/lnx00/Lmaobox-ImMenu/main/src/ImMenu.lua"
-
--- Initialize libraries - LNXlib first (globally), then ImMenu
-Common.Lib = loadlib("LNXlib", latestLNXlib)
-Common.ImMenu = loadlib("ImMenu", LatestImMenu)
-
-Common.Log = Common.Lib.Utils.Logger.new("Cheater Detection")
-Common.Notify = Common.Lib.UI.Notify
-Common.TF2 = Common.Lib.TF2
-Common.Math, Common.Conversion = Common.Lib.Utils.Math, Common.Lib.Utils.Conversion
-Common.WPlayer, Common.PR = Common.TF2.WPlayer, Common.TF2.PlayerResource
-Common.Helpers = Common.TF2.Helpers
-
-local G = require("Cheater_Detection.Globals")
--- Require Json.lua directly
-Common.Json = require("Cheater_Detection.Modules.Json")
+]]--
 
 local cachedSteamIDs = {}
 local lastTick = -1

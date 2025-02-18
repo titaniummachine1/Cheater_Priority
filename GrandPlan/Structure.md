@@ -2,14 +2,13 @@
 
 ## Root Directory
 ```
-/cheat_detection/
+/Cheater_Detection/
 │── main.lua
-│── config.json
 ```
 
 ## Core Modules
 ```
-/cheat_detection/core/
+/Cheater_Detection/core/
 │── detection_engine.lua
 │── evidence_system.lua
 │── player_monitor.lua
@@ -17,7 +16,7 @@
 
 ## Database Modules
 ```
-/cheat_detection/database/
+/Cheater_Detection/database/
 │── database_manager.lua
 │── runtime_database.lua
 │── local_database.lua
@@ -26,7 +25,7 @@
 
 ## Detection Methods
 ```
-/cheat_detection/detection_methods/
+/Cheater_Detection/detection_methods/
 │── silent_aimbot.lua      # Detects silent aimbot behavior
 │── plain_aimbot.lua       # Detects obvious aimbot snapping
 │── smooth_aimbot.lua      # Detects assisted aiming with smoothing
@@ -41,7 +40,7 @@
 
 ## Miscellaneous Features
 ```
-/cheat_detection/misc/
+/Cheater_Detection/misc/
 │── vote_reveal.lua         # Reveals in-game vote results
 │── auto_vote.lua           # Automates voting actions
 │── /visuals/               # Subfolder for visual elements
@@ -52,7 +51,7 @@
 
 ## Utility Modules
 ```
-/cheat_detection/utils/
+/Cheater_Detection/utils/
 │── logger.lua
 │── config.lua
 │── helpers.lua
@@ -61,7 +60,7 @@
 
 ## External Libraries (Optional)
 ```
-/cheat_detection/libs/
+/Cheater_Detection/libs/
 │── ImMenu.lua              # UI Library
 │── LNX.lua                 # General Utility Library
 │── json.lua              # JSON Parsing Library
@@ -69,7 +68,7 @@
 
 ## Unit Tests
 ```
-/cheat_detection/unit_tests/
+/Cheater_Detection/unit_tests/
 │── test_runner.lua          # Runs automated unit tests
 │── core_tests.lua           # Tests core detection functionality
 │── database_tests.lua       # Tests database operations

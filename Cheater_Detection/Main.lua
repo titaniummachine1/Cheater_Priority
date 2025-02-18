@@ -7,6 +7,8 @@
     Alchemist for testing and party callout
 ]]
 
+if UnloadLib ~= nil then UnloadLib() end
+
 --[[ actiave the script Modules]]
 local Common = require("Cheater_Detection.Common")
 local G = require("Cheater_Detection.Globals")
@@ -15,7 +17,7 @@ local Database = require("Cheater_Detection.Database")
 local Detections = require("Cheater_Detection.Detections")
 require("Cheater_Detection.Visuals") --wake up the visuals
 require("Cheater_Detection.Modules.EventHandler") --wake up the visuals
-require("Cheater_Detection.Menu") --wake up the visuals
+require("Cheater_Detection.Misc.Visuals.Menu") --wake up the visuals
 --require("Cheater_Detection.Modules.PlayerTags") --chat tags based on who player is
 --require("Cheater_Detection.Modules.AutoVote") --wake up the visuals
 
