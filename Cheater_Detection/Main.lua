@@ -16,8 +16,6 @@ local Detections = require("Cheater_Detection.Detections")
 require("Cheater_Detection.Visuals") --wake up the visuals
 require("Cheater_Detection.Modules.EventHandler") --wake up the visuals
 require("Cheater_Detection.Misc.Visuals.Menu") --wake up the visuals
---require("Cheater_Detection.Modules.PlayerTags") --chat tags based on who player is
---require("Cheater_Detection.Modules.AutoVote") --wake up the visuals
 
 --[[ Variables ]]
 local TF2 = Common.TF2
