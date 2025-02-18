@@ -2,24 +2,27 @@
 ---@class Common
 local Common = {}
 
+if UnloadLib ~= nil then UnloadLib() end
+
 -- Unload the module if it's already loaded
 if package.loaded["ImMenu"] then
     package.loaded["ImMenu"] = nil
 end
 
---------------------------------------------------------------------------------------
---Library loading--
---------------------------------------------------------------------------------------
---[[
--- Function to download content from a URL
-local function downloadFile(url)
-    local body = http.Get(url)
-    if not body or body == "" then
-        error("Failed to download file from " .. url)
-    end
-    return body
-end
-]]--
+-- Initialize libraries - LNXlib first (globally), then ImMenu and Json
+Common.Lib = require("Cheater_Detection.Libs.lnxLib")
+Common.ImMenu = require("Cheater_Detection.Libs.ImMenu")
+Common.Json = require("Cheater_Detection.Libs.Json")
+
+Common.Log = Common.Lib.Utils.Logger.new("Cheater Detection")
+Common.Notify = Common.Lib.UI.Notify
+Common.TF2 = Common.Lib.TF2
+Common.Math, Common.Conversion = Common.Lib.Utils.Math, Common.Lib.Utils.Conversion
+Common.WPlayer, Common.PR = Common.TF2.WPlayer, Common.TF2.PlayerResource
+Common.Helpers = Common.TF2.Helpers
+
+local G = require("Cheater_Detection.Globals")
+-- Require Json.lua directly
 
 local cachedSteamIDs = {}
 local lastTick = -1

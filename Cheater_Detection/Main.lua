@@ -7,8 +7,6 @@
     Alchemist for testing and party callout
 ]]
 
-if UnloadLib ~= nil then UnloadLib() end
-
 --[[ actiave the script Modules]]
 local Common = require("Cheater_Detection.Common")
 local G = require("Cheater_Detection.Globals")

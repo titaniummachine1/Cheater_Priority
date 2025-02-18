@@ -345,7 +345,7 @@ end
 
 ---Encodes a lua table to a JSON string.
 ---@param value any
----@param state JsonState
+---@param state? JsonState
 ---@return string|boolean
 function json.encode(value, state)
     state = state or {}

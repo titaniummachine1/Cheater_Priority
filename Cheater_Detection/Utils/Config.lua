@@ -1,6 +1,9 @@
 --[[ Imports ]]
 local Common = require("Cheater_Detection.Common")
 local G = require("Cheater_Detection.Globals")
+local json = require("Cheater_Detection.Libs.Json")
+local Default_Config = require("Cheater_Detection.Utils.Default_Config")
+
 local Config = {}
 
 local Log = Common.Log
@@ -14,28 +17,6 @@ local folder_name = string.format([[Lua %s]], script_name)
 function Config.GetFilePath()
     local success, fullPath = filesystem.CreateDirectory(folder_name)
     return fullPath .. "/config.cfg"
-end
-
-local function serializeTable(tbl, level)
-    level = level or 0
-    local result = string.rep("    ", level) .. "{\n"
-    for key, value in pairs(tbl) do
-        result = result .. string.rep("    ", level + 1)
-        if type(key) == "string" then
-            result = result .. '["' .. key .. '"] = '
-        else
-            result = result .. "[" .. key .. "] = "
-        end
-        if type(value) == "table" then
-            result = result .. serializeTable(value, level + 1) .. ",\n"
-        elseif type(value) == "string" then
-            result = result .. '"' .. value .. '",\n'
-        else
-            result = result .. tostring(value) .. ",\n"
-        end
-    end
-    result = result .. string.rep("    ", level) .. "}"
-    return result
 end
 
 local function checkAllKeysExist(expectedMenu, loadedMenu)
@@ -62,7 +43,7 @@ function Config.CreateCFG(table)
     local shortFilePath = filepath:match(".*\\(.*\\.*)$")
 
     if file then
-        local serializedConfig = serializeTable(table)
+        local serializedConfig = json.encode(table)
         file:write(serializedConfig)
         file:close()
 
@@ -83,24 +64,15 @@ function Config.LoadCFG()
     if file then
         local content = file:read("*a")
         file:close()
-        local chunk, err = load("return " .. content)
-        if chunk then
-            local loadedMenu = chunk()
-            if checkAllKeysExist(G.Default_Menu, loadedMenu) and not input.IsButtonDown(KEY_LSHIFT) then
-                printc(100, 183, 0, 255, "Success Loading Config: Path: " .. shortFilePath)
-                Notify.Simple("Success! Loaded Config from", shortFilePath, 5)
-                G.Menu = loadedMenu
-            else
-                local warningMessage = input.IsButtonDown(KEY_LSHIFT) and "Creating a new config." or "Config is outdated or invalid. Creating a new config."
-                printc(255, 0, 0, 255, warningMessage)
-                Notify.Simple("Warning", warningMessage, 5)
-                Config.CreateCFG(G.Default_Menu)
-                G.Menu = G.Default_Menu
-            end
+        local loadedMenu = json.decode(content)
+        if loadedMenu and checkAllKeysExist(G.Default_Menu, loadedMenu) and not input.IsButtonDown(KEY_LSHIFT) then
+            printc(100, 183, 0, 255, "Success Loading Config: Path: " .. shortFilePath)
+            Notify.Simple("Success! Loaded Config from", shortFilePath, 5)
+            G.Menu = loadedMenu
         else
-            local errorMessage = "Error executing configuration file: " .. tostring(err)
-            printc(255, 0, 0, 255, errorMessage)
-            Notify.Simple("Error", errorMessage, 5)
+            local warningMessage = input.IsButtonDown(KEY_LSHIFT) and "Creating a new config." or "Config is outdated or invalid. Creating a new config."
+            printc(255, 0, 0, 255, warningMessage)
+            Notify.Simple("Warning", warningMessage, 5)
             Config.CreateCFG(G.Default_Menu)
             G.Menu = G.Default_Menu
         end

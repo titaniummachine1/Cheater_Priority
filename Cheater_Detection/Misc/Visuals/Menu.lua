@@ -1,6 +1,5 @@
 --[[ Imports ]]
 local Common = require("Cheater_Detection.Common")
---local FileBrowser = require("Cheater_Detection.Modules.FileBrowser")
 local G = require("Cheater_Detection.Globals")
 local Config = require("Cheater_Detection.Config")
 

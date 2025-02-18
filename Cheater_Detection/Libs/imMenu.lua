@@ -3,10 +3,9 @@
     Author: github.com/lnx00
 ]]
 
-
 -- Import lnxLib
 ---@type boolean, lnxLib
-local libLoaded, lnxLib = pcall(require, "lnxLib")
+local lnxLib = require("Cheater_Detection.Utils.Common.Lib") or error("lnxLib not found")
 
 local Fonts, Notify = lnxLib.UI.Fonts, lnxLib.UI.Notify
 local KeyHelper, Input, Timer = lnxLib.Utils.KeyHelper, lnxLib.Utils.Input, lnxLib.Utils.Timer

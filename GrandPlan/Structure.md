@@ -3,24 +3,24 @@
 ## Root Directory
 ```
 /Cheater_Detection/
-│── main.lua
+│── Main.lua
 ```
 
 ## Core Modules
 ```
 /Cheater_Detection/core/
-│── detection_engine.lua
-│── evidence_system.lua
-│── player_monitor.lua
+│── Detection_engine.lua
+│── Evidence_system.lua
+│── Player_monitor.lua
 ```
 
 ## Database Modules
 ```
 /Cheater_Detection/database/
-│── database_manager.lua
-│── runtime_database.lua
-│── local_database.lua
-│── database_fetcher.lua
+│── Database_manager.lua
+│── Runtime_database.lua
+│── Local_database.lua
+│── Database_fetcher.lua
 ```
 
 ## Detection Methods
@@ -41,21 +41,19 @@
 ## Miscellaneous Features
 ```
 /Cheater_Detection/misc/
-│── vote_reveal.lua         # Reveals in-game vote results
-│── auto_vote.lua           # Automates voting actions
-│── /visuals/               # Subfolder for visual elements
-│   │── menu.lua            # UI menu using ImMenu
-│   │── cheater_tag.lua     # Displays "cheater" tags on flagged players
-│   │── loading_ring.lua    # Displays a loading indicator for processes
+│── Vote_reveal.lua         # Reveals in-game vote results
+│── Auto_vote.lua           # Automates voting actions
+│── /Visuals/               # Subfolder for visual elements
+│   │── Menu.lua            # UI menu using ImMenu
+│   │── Cheater_tag.lua     # Displays "cheater" tags on flagged players
+│   │── Loading_ring.lua    # Displays a loading indicator for processes
 ```
 
 ## Utility Modules
 ```
 /Cheater_Detection/utils/
-│── logger.lua
-│── config.lua
-│── helpers.lua
-│── performance.lua
+│── Config.lua
+│── Common.lua
 ```
 
 ## External Libraries (Optional)
