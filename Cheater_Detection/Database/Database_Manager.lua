@@ -21,12 +21,17 @@ end
 function Database.SaveDatabase(DataBaseTable)
     DataBaseTable = DataBaseTable or G.DataBase or {}
     local filepath = Database.GetFilePath()
-    local file, err = io.open(filepath, "w")
 
-    if file then
-        -- Create a new table to store unique records
+    -- Create a backup before saving
+    local backupPath = filepath .. ".bak"
+    local ok, err = os.rename(filepath, backupPath)
+    if not ok then
+        print("Backup failed: " .. tostring(err))
+    end
+
+    local status, file = pcall(io.open, filepath, "w")
+    if status and file then
         local uniqueDataBase = {}
-
         -- Iterate over the database table
         for steamId, data in pairs(DataBaseTable) do
             -- If the record doesn't exist in the unique database, add it
@@ -37,6 +42,11 @@ function Database.SaveDatabase(DataBaseTable)
 
         -- Serialize the unique database to JSON
         local serializedDatabase = Json.encode(uniqueDataBase)
+        if not serializedDatabase then
+            print("Failed encoding database.")
+            file:close()
+            return
+        end
 
         -- Write the serialized database to the file
         file:write(serializedDatabase)
@@ -44,15 +54,14 @@ function Database.SaveDatabase(DataBaseTable)
 
         printc(255, 183, 0, 255, "[" .. os.date("%H:%M:%S") .. "] Saved Database to " .. tostring(filepath))
     else
-        print("Failed to save database. Error: " .. tostring(err))
+        print("Failed to open file for saving. Error: " .. tostring(file))
     end
 end
 
 function Database.LoadDatabase()
     local filepath = Database.GetFilePath()
-    local file, err = io.open(filepath, "r")
-
-    if file then
+    local status, file = pcall(io.open, filepath, "r")
+    if status and file then
         local content = file:read("*a")
         file:close()
 
@@ -67,11 +76,12 @@ function Database.LoadDatabase()
             G.DataBase = loadedDatabase or {}
         end
     else
-        print("Failed to load database. Error: " .. tostring(err))
+        print("Failed to load database. Error: " .. tostring(file))
         G.DataBase = {}
         Database.SaveDatabase()
     end
 end
+
 -- Enhance data update checking and handling
 function Database.updateDatabase(steamID64, playerData)
     local existingData = G.DataBase[steamID64]
