@@ -1,8 +1,8 @@
 --[[ Imports ]]
-local Common = require("Cheater_Detection.Common")
-local G = require("Cheater_Detection.Globals")
+local Common = require("Cheater_Detection.Utils.Common")
+local G = require("Cheater_Detection.Utils.Globals")
 local json = require("Cheater_Detection.Libs.Json")
-local Default_Config = require("Cheater_Detection.Utils.Default_Config")
+local Default_Config = require("Cheater_Detection.Utils.DefaultConfig")
 
 local Config = {}
 
@@ -36,7 +36,7 @@ end
 
 --[[ Configuration Functions ]]
 function Config.CreateCFG(table)
-    table = table or G.Default_Menu
+    table = table or Default_Config
 
     local filepath = Config.GetFilePath()
     local file = io.open(filepath, "w")

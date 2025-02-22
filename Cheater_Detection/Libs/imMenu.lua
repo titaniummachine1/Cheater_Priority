@@ -3,9 +3,10 @@
     Author: github.com/lnx00
 ]]
 
--- Import lnxLib
----@type boolean, lnxLib
-local lnxLib = require("Cheater_Detection.Utils.Common.Lib") or error("lnxLib not found")
+-- Get the global lnxLib instance instead of requiring Common
+if not lnxLib then
+    error("lnxLib not found. Make sure it's loaded before ImMenu")
+end
 
 local Fonts, Notify = lnxLib.UI.Fonts, lnxLib.UI.Notify
 local KeyHelper, Input, Timer = lnxLib.Utils.KeyHelper, lnxLib.Utils.Input, lnxLib.Utils.Timer
@@ -617,6 +618,11 @@ end
 ---@param text string
 ---@return boolean clicked, boolean active
 function ImMenu.Button(text)
+    -- Ensure text is a string
+    if type(text) ~= "string" then
+        error("Expected 'text' to be a string, got " .. type(text))
+    end
+
     local x, y = ImMenu.Cursor.X, ImMenu.Cursor.Y
     local label = ImMenu.GetLabel(text)
     local txtWidth, txtHeight = draw.GetTextSize(label)
@@ -1056,19 +1062,34 @@ function ImMenu.Combo(text, selected, options)
     return selected
 end
 
----@param tabs table<string, boolean>
+---@param tabs table<string, boolean>|table<number, string>
 ---@param currentTab string
 ---@return string currentTab
 function ImMenu.TabControl(tabs, currentTab)
+    if type(tabs) ~= "table" then
+        error("Expected 'tabs' to be a table, got " .. type(tabs))
+    end
+    if type(currentTab) ~= "string" then
+        error("Expected 'currentTab' to be a string, got " .. type(currentTab))
+    end
+
     ImMenu.PushStyle("FramePadding", 5)
     ImMenu.PushStyle("ItemSize", {100, 25})
     ImMenu.PushStyle("Spacing", {5, 5})
     ImMenu.BeginFrame(1)
 
-   -- Items
-    for tabName, _ in pairs(tabs) do
-        if ImMenu.Button(tabName) then
-            currentTab = tabName
+    -- Use ipairs if 'tabs' is an array, otherwise use pairs.
+    if #tabs > 0 then
+        for _, tabName in ipairs(tabs) do
+            if ImMenu.Button(tabName) then
+                currentTab = tabName
+            end
+        end
+    else
+        for tabName, _ in pairs(tabs) do
+            if ImMenu.Button(tabName) then
+                currentTab = tabName
+            end
         end
     end
 

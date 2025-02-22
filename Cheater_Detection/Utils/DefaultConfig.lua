@@ -1,5 +1,5 @@
 local Default_Config = {
-    currentTab = 1,
+    currentTab = "Main",
 
     Main = {
         AutoMark = true,
@@ -34,8 +34,8 @@ local Default_Config = {
         debug = false,
     },
 
-    AutoVote = {
-        Enable = true,
+    Misc = {
+        Autovote = true,
         intent = {
             legit = true,
             cheater = true,

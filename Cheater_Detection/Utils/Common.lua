@@ -1,6 +1,19 @@
 ---@diagnostic disable: duplicate-set-field, undefined-field
----@class Common
-local Common = {}
+
+-- Create and initialize the Common table first
+local Common = {
+    Lib = nil,
+    ImMenu = nil,
+    Json = nil,
+    Log = nil,
+    Notify = nil,
+    TF2 = nil,
+    Math = nil,
+    Conversion = nil,
+    WPlayer = nil,
+    PR = nil,
+    Helpers = nil
+}
 
 if UnloadLib ~= nil then UnloadLib() end
 
@@ -9,20 +22,69 @@ if package.loaded["ImMenu"] then
     package.loaded["ImMenu"] = nil
 end
 
--- Initialize libraries - LNXlib first (globally), then ImMenu and Json
-Common.Lib = require("Cheater_Detection.Libs.lnxLib")
+--------------------------------------------------------------------------------------
+--Library loading--
+--------------------------------------------------------------------------------------
+
+-- Function to download content from a URL
+local function downloadFile(url)
+    local body = http.Get(url)
+    if not body or body == "" then
+        error("Failed to download file from " .. url)
+    end
+    return body
+end
+
+-- Load and validate library
+local function loadlib(libName, libURL)
+    if libName == "LNXlib" then
+        -- Download and load LNXlib
+        local libContent = downloadFile(libURL)
+        -- Execute directly and assign globally
+        lnxLib = assert(load(libContent))()
+
+        -- Allow require("lnxLib") to return global
+        package.preload["lnxLib"] = function()
+            return lnxLib
+        end
+
+        return lnxLib
+    else
+        -- For ImMenu, load normally but modify its code first
+        local libContent = downloadFile(libURL)
+        if libName == "ImMenu" then
+            -- Replace the header but keep rest of the code
+            libContent = libContent:gsub(
+                ".-\n\nlocal Fonts",  -- Match everything up to "local Fonts"
+                '--[[ ImMenu ]]--\n\nlocal lnxLib = _G.lnxLib\nlocal Fonts'  -- Replace with our simple header
+            )
+        end
+
+        -- Execute modified code and capture return value
+        local libFunction = assert(load(libContent))
+        return libFunction() -- Return the module table
+    end
+end
+
+--why
+local latestLNXlib = "https://" .. "github.com/lnx00/Lmaobox-Library/releases/latest/download/lnxLib.lua"
+
+-- Initialize libraries in order
+Common.Lib = loadlib("LNXlib", latestLNXlib)
 Common.ImMenu = require("Cheater_Detection.Libs.ImMenu")
 Common.Json = require("Cheater_Detection.Libs.Json")
 
+local G = require("Cheater_Detection.Utils.Globals")
+
+-- Now initialize remaining Common fields using the loaded libraries
 Common.Log = Common.Lib.Utils.Logger.new("Cheater Detection")
 Common.Notify = Common.Lib.UI.Notify
 Common.TF2 = Common.Lib.TF2
-Common.Math, Common.Conversion = Common.Lib.Utils.Math, Common.Lib.Utils.Conversion
-Common.WPlayer, Common.PR = Common.TF2.WPlayer, Common.TF2.PlayerResource
-Common.Helpers = Common.TF2.Helpers
-
-local G = require("Cheater_Detection.Globals")
--- Require Json.lua directly
+Common.Math = Common.Lib.Utils.Math
+Common.Conversion = Common.Lib.Utils.Conversion
+Common.WPlayer = Common.Lib.TF2.WPlayer
+Common.PR = Common.Lib.TF2.PlayerResource
+Common.Helpers = Common.Lib.TF2.Helpers
 
 local cachedSteamIDs = {}
 local lastTick = -1

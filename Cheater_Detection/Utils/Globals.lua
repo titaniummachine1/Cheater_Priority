@@ -70,67 +70,6 @@ Globals.defaultRecord = {
     Date = os.date("%Y-%m-%d %H:%M:%S"),
 }
 
-Globals.Default_Menu = {
-    currentTab = 1,
-
-    Main = {
-        StrikeLimit = 5,
-        ChokeDetection = {
-            Enable = true,
-            MaxChoke = 22,
-        },
-        WarpDetection = {
-            Enable = false,
-            MinWarp = 13,
-        },
-        BhopDetection = {
-            Enable = true,
-            MaxBhop = 2,
-        },
-        AimbotDetection = {
-            Enable = true,
-            MAXfov = 20,
-        },
-        AntyAimDetection = true,
-        DuckSpeedDetection = true,
-        AutoMark = true,
-        debug = false,
-    },
-
-    Visuals = {
-        partyCallaut = true,
-        Chat_Prefix = true,
-        Cheater_Tags = true,
-        JoinWarning = true,
-        Class_Change_Reveal = {
-            Enable = true,
-            EnemyOnly = true,
-            PartyChat = true,
-            Console = true,
-        },
-        Debug = false,
-    },
-    AutoVote = {
-        Enable = true,
-        intent = {
-            legit = true,
-            cheater = true,
-            bot = true,
-            friend = false,
-        },
-        Vote_Reveal = {
-            Enable = true,
-            TargetTeam = {
-                MyTeam = true,
-                enemyTeam = true,
-            },
-            PartyChat = true,
-            Console = true,
-        },
-        Chat_notify = true,
-    }
-}
-
-Globals.Menu = Globals.Default_Menu
+Globals.Menu = require("Cheater_Detection.Utils.DefaultConfig")
 
 return Globals

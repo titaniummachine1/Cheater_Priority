@@ -8,13 +8,13 @@
 ]]
 
 --[[ actiave the script Modules]]
-local Common = require("Cheater_Detection.Common")
-local G = require("Cheater_Detection.Globals")
-local Config = require("Cheater_Detection.Config")
-local Database = require("Cheater_Detection.Database")
-local Detections = require("Cheater_Detection.Detections")
-require("Cheater_Detection.Visuals") --wake up the visuals
-require("Cheater_Detection.Modules.EventHandler") --wake up the visuals
+--local Common = require("Cheater_Detection.Common")
+--local G = require("Cheater_Detection.Globals")
+local Config = require("Cheater_Detection.Utils.Config")
+--local Database = require("Cheater_Detection.Database")
+--local Detections = require("Cheater_Detection.Detections")
+--require("Cheater_Detection.Visuals") --wake up the visuals
+--require("Cheater_Detection.Modules.EventHandler") --wake up the visuals
 require("Cheater_Detection.Misc.Visuals.Menu") --wake up the visuals
 
 --[[ Variables ]]
@@ -25,7 +25,7 @@ Config.LoadCFG() --load config on load of script
 Database.LoadDatabase() --load database inicialy to have stable databse first before loadign imports
 Database.importDatabase() --import the database after loading main one to avoid geting trolled by empty imports
 
-playerlist.SetPriority(G.pLocal, 0) --debug
+playerlist.SetPriority(entities.GetLocalPlayer(), 0) --debug
 
 --[[ Update the player data every tick ]]--
 local function OnCreateMove(cmd)
