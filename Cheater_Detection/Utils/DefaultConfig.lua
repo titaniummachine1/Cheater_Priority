@@ -7,12 +7,6 @@ local Default_Config = {
         Chat_Prefix = true,
         Cheater_Tags = true,
         JoinWarning = true,
-        Class_Change_Reveal = {
-            Enable = true,
-            EnemyOnly = true,
-            PartyChat = true,
-            Console = true,
-        },
     },
 
     Advanced = {
@@ -48,6 +42,12 @@ local Default_Config = {
                 MyTeam = true,
                 enemyTeam = true,
             },
+            PartyChat = true,
+            Console = true,
+        },
+        Class_Change_Reveal = {
+            Enable = true,
+            EnemyOnly = true,
             PartyChat = true,
             Console = true,
         },

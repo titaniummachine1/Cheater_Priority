@@ -21,7 +21,7 @@ local function DrawMenu()
     if gui.IsMenuOpen() and ImMenu.Begin("Cheater Detection", true) then
         -- Tabs for different sections
         ImMenu.BeginFrame(1)
-            local tabs = {"Main", "Visuals", "Misc"}
+            local tabs = {"Main", "Advanced", "Misc"}
             G.Menu.currentTab = ImMenu.TabControl(tabs, G.Menu.currentTab)
         ImMenu.EndFrame()
 
@@ -38,15 +38,6 @@ local function DrawMenu()
                 Main.Chat_Prefix = ImMenu.Checkbox("Chat Prefix", Main.Chat_Prefix)
                 Main.Cheater_Tags = ImMenu.Checkbox("Cheater Tags", Main.Cheater_Tags)
                 Main.JoinWarning = ImMenu.Checkbox("Join Warning", Main.JoinWarning)
-            ImMenu.EndFrame()
-
-            ImMenu.BeginFrame()
-                Main.Class_Change_Reveal.Enable = ImMenu.Checkbox("Class Change Reveal", Main.Class_Change_Reveal.Enable)
-                if Main.Class_Change_Reveal.Enable then
-                    Main.Class_Change_Reveal.EnemyOnly = ImMenu.Checkbox("Enemy Only", Main.Class_Change_Reveal.EnemyOnly)
-                    Main.Class_Change_Reveal.PartyChat = ImMenu.Checkbox("Party Chat", Main.Class_Change_Reveal.PartyChat)
-                    Main.Class_Change_Reveal.Console = ImMenu.Checkbox("Console Log", Main.Class_Change_Reveal.Console)
-                end
             ImMenu.EndFrame()
         end
 
@@ -104,18 +95,31 @@ local function DrawMenu()
 
             ImMenu.BeginFrame(1)
                 Misc.Vote_Reveal.Enable = ImMenu.Checkbox("Vote Reveal", Misc.Vote_Reveal.Enable)
-                if Misc.Vote_Reveal.Enable then
-                    ImMenu.BeginFrame(1)
-                        Misc.Vote_Reveal.TargetTeam.MyTeam = ImMenu.Checkbox("My Team", Misc.Vote_Reveal.TargetTeam.MyTeam)
-                        Misc.Vote_Reveal.TargetTeam.enemyTeam = ImMenu.Checkbox("Enemy Team", Misc.Vote_Reveal.TargetTeam.enemyTeam)
-                    ImMenu.EndFrame()
-
-                    ImMenu.BeginFrame(1)
-                        Misc.Vote_Reveal.PartyChat = ImMenu.Checkbox("Party Chat", Misc.Vote_Reveal.PartyChat)
-                        Misc.Vote_Reveal.Console = ImMenu.Checkbox("Console Log", Misc.Vote_Reveal.Console)
-                    ImMenu.EndFrame()
-                end
             ImMenu.EndFrame()
+
+            if Misc.Vote_Reveal.Enable then
+                ImMenu.BeginFrame(1)
+                    Misc.Vote_Reveal.TargetTeam.MyTeam = ImMenu.Checkbox("My Team", Misc.Vote_Reveal.TargetTeam.MyTeam)
+                    Misc.Vote_Reveal.TargetTeam.enemyTeam = ImMenu.Checkbox("Enemy Team", Misc.Vote_Reveal.TargetTeam.enemyTeam)
+                ImMenu.EndFrame()
+
+                ImMenu.BeginFrame(1)
+                    Misc.Vote_Reveal.PartyChat = ImMenu.Checkbox("Party Chat", Misc.Vote_Reveal.PartyChat)
+                    Misc.Vote_Reveal.Console = ImMenu.Checkbox("Console Log", Misc.Vote_Reveal.Console)
+                ImMenu.EndFrame()
+            end
+
+            -- Class Change Reveal moved to Misc as defined in Default_Config
+            ImMenu.BeginFrame(1)
+                Misc.Class_Change_Reveal.Enable = ImMenu.Checkbox("Class Change Reveal", Misc.Class_Change_Reveal.Enable)
+            ImMenu.EndFrame()
+            if Misc.Class_Change_Reveal.Enable then
+                ImMenu.BeginFrame(1)
+                    Misc.Class_Change_Reveal.EnemyOnly = ImMenu.Checkbox("Enemy Only", Misc.Class_Change_Reveal.EnemyOnly)
+                    Misc.Class_Change_Reveal.PartyChat = ImMenu.Checkbox("Party Chat", Misc.Class_Change_Reveal.PartyChat)
+                    Misc.Class_Change_Reveal.Console = ImMenu.Checkbox("Console Log", Misc.Class_Change_Reveal.Console)
+                ImMenu.EndFrame()
+            end
 
             ImMenu.BeginFrame(1)
                 Misc.Chat_notify = ImMenu.Checkbox("Chat Notifications", Misc.Chat_notify)
