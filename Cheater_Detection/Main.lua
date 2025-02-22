@@ -11,7 +11,7 @@
 local Common = require("Cheater_Detection.Utils.Common")
 local G = require("Cheater_Detection.Utils.Globals")
 local Config = require("Cheater_Detection.Utils.Config")
---local Database = require("Cheater_Detection.Database")
+local Database = require("Cheater_Detection.Database.Database_Manager")
 --local Detections = require("Cheater_Detection.Detections")
 --require("Cheater_Detection.Visuals") --wake up the visuals
 --require("Cheater_Detection.Modules.EventHandler") --wake up the visuals
@@ -105,7 +105,7 @@ callbacks.Unregister("Unload", "CDDatabase_Unload")                             
 callbacks.Register("Unload", "CDDatabase_Unload", OnUnload)                         -- Register the "Unload" callback
 
 --[[ Unregister previous callbacks ]]--
-callbacks.Unregister("CreateMove", "Cheater_detection")                     -- unregister the "CreateMove" callback
+--callbacks.Unregister("CreateMove", "Cheater_detection")                     -- unregister the "CreateMove" callback
 
 --[[ Register callbacks ]]--
-callbacks.Register("CreateMove", "Cheater_detection", OnCreateMove)        -- register the "CreateMove" callback
+--callbacks.Register("CreateMove", "Cheater_detection", OnCreateMove)        -- register the "CreateMove" callback

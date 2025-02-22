@@ -1,6 +1,6 @@
 --[[ Imports ]]
-local Common = require("Cheater_Detection.Common")
-local G = require("Cheater_Detection.Globals")
+local Common = require("Cheater_Detection.Utils.Common")
+local G = require("Cheater_Detection.Utils.Globals")
 
 local Database = {}
 
