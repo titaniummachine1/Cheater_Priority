@@ -35,18 +35,15 @@ local function checkAllKeysExist(expectedMenu, loadedMenu)
 end
 
 --[[ Configuration Functions ]]
-function Config.CreateCFG(table)
-    table = table or Default_Config
-
+function Config.CreateCFG(cfgTable)
+    cfgTable = cfgTable or Default_Config
     local filepath = Config.GetFilePath()
     local file = io.open(filepath, "w")
     local shortFilePath = filepath:match(".*\\(.*\\.*)$")
-
     if file then
-        local serializedConfig = json.encode(table)
+        local serializedConfig = json.encode(cfgTable)
         file:write(serializedConfig)
         file:close()
-
         printc(100, 183, 0, 255, "Success Saving Config: Path: " .. shortFilePath)
         Notify.Simple("Success! Saved Config to:", shortFilePath, 5)
     else
@@ -60,28 +57,27 @@ function Config.LoadCFG()
     local filepath = Config.GetFilePath()
     local file = io.open(filepath, "r")
     local shortFilePath = filepath:match(".*\\(.*\\.*)$")
-
     if file then
         local content = file:read("*a")
         file:close()
-        local loadedMenu = json.decode(content)
-        if loadedMenu and checkAllKeysExist(G.Default_Menu, loadedMenu) and not input.IsButtonDown(KEY_LSHIFT) then
+        local loadedCfg = json.decode(content)
+        if loadedCfg and checkAllKeysExist(Default_Config, loadedCfg) and not input.IsButtonDown(KEY_LSHIFT) then
             printc(100, 183, 0, 255, "Success Loading Config: Path: " .. shortFilePath)
             Notify.Simple("Success! Loaded Config from", shortFilePath, 5)
-            G.Menu = loadedMenu
+            G.Menu = loadedCfg
         else
-            local warningMessage = input.IsButtonDown(KEY_LSHIFT) and "Creating a new config." or "Config is outdated or invalid. Creating a new config."
+            local warningMessage = input.IsButtonDown(KEY_LSHIFT) and "Creating a new config." or "Config is outdated or invalid. Resetting to default."
             printc(255, 0, 0, 255, warningMessage)
             Notify.Simple("Warning", warningMessage, 5)
-            Config.CreateCFG(G.Default_Menu)
-            G.Menu = G.Default_Menu
+            Config.CreateCFG(Default_Config)
+            G.Menu = Default_Config
         end
     else
         local warningMessage = "Config file not found. Creating a new config."
         printc(255, 0, 0, 255, warningMessage)
         Notify.Simple("Warning", warningMessage, 5)
-        Config.CreateCFG(G.Default_Menu)
-        G.Menu = G.Default_Menu
+        Config.CreateCFG(Default_Config)
+        G.Menu = Default_Config
     end
 end
 

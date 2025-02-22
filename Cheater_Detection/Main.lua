@@ -8,8 +8,8 @@
 ]]
 
 --[[ actiave the script Modules]]
---local Common = require("Cheater_Detection.Common")
---local G = require("Cheater_Detection.Globals")
+local Common = require("Cheater_Detection.Utils.Common")
+local G = require("Cheater_Detection.Utils.Globals")
 local Config = require("Cheater_Detection.Utils.Config")
 --local Database = require("Cheater_Detection.Database")
 --local Detections = require("Cheater_Detection.Detections")
@@ -18,8 +18,8 @@ local Config = require("Cheater_Detection.Utils.Config")
 require("Cheater_Detection.Misc.Visuals.Menu") --wake up the visuals
 
 --[[ Variables ]]
-local TF2 = Common.TF2
-local WPlayer, PR = TF2.WPlayer, TF2.PlayerResource
+
+local WPlayer, PR = Common.WPlayer, Common.PlayerResource
 
 Config.LoadCFG() --load config on load of script
 Database.LoadDatabase() --load database inicialy to have stable databse first before loadign imports
