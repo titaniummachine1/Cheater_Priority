@@ -225,4 +225,22 @@ function Database.ClearSuspect(steamId)
     end
 end
 
+local function OnUnload() -- Called when the script is unloaded
+    if G.DataBase then
+        if G.Menu.Main.debug then
+            Database.ClearSuspect(Common.GetSteamID64(entities.GetLocalPlayer())) -- Clear the local if debug is enabled
+        end
+
+        Database.SaveDatabase(G.DataBase) -- Save the database
+    else
+        Database.SaveDatabase()
+    end
+end
+
+--[[ Unregister previous callbacks ]]--
+callbacks.Unregister("Unload", "CDDatabase_Unload")                                -- unregister the "Unload" callback
+--[[ Register callbacks ]]--
+callbacks.Register("Unload", "CDDatabase_Unload", OnUnload)                         -- Register the "Unload" callback
+
+
 return Database
