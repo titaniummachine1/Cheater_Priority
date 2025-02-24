@@ -5,9 +5,6 @@ local G = require("Cheater_Detection.Utils.Globals")
 local Database = {}
 
 local Json = Common.Json
-local Log = Common.Log
-
-Log.Level = 0
 
 local Lua__fullPath = GetScriptName()
 local Lua__fileName = Lua__fullPath:match("\\([^\\]-)$"):gsub("%.lua$", "")
@@ -22,12 +19,6 @@ function Database.SaveDatabase(DataBaseTable)
     DataBaseTable = DataBaseTable or G.DataBase or {}
     local filepath = Database.GetFilePath()
 
-    -- Create a backup before saving
-    local backupPath = filepath .. ".bak"
-    local ok, err = os.rename(filepath, backupPath)
-    if not ok then
-        print("Backup failed: " .. tostring(err))
-    end
 
     local status, file = pcall(io.open, filepath, "w")
     if status and file then
