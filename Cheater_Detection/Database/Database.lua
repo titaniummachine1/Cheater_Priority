@@ -187,15 +187,4 @@ callbacks.Register("Unload", "CDDatabase_Unload", OnUnload)
 -- Initialize the database when this module is loaded
 InitializeDatabase()
 
--- Add database update command
-client.Command("cd_update_db", function()
-    local added = Database_Fetcher.FetchAll(Database)
-    if added > 0 then
-        Database.SaveDatabase()
-        print("[Database] Database updated with " .. added .. " new entries")
-    else
-        print("[Database] No new entries added")
-    end
-end, "Update the cheater database from online sources")
-
 return Database
