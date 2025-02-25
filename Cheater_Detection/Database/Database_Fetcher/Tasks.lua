@@ -1,14 +1,14 @@
 -- Task management system for coroutines
 
 local Tasks = {
-    queue = {},        -- Task queue
-    current = nil,     -- Current running coroutine
-    status = "idle",   -- Current status (idle, running, etc.)
-    progress = 0,      -- Progress value (0-100)
-    message = "",      -- Status message
-    callback = nil,    -- Callback to run when all tasks complete
-    isRunning = false, -- Is the task system currently running
-    silent = false,    -- Whether to show UI
+    queue = {},         -- Task queue
+    current = nil,      -- Current running coroutine
+    status = "idle",    -- Current status (idle, running, etc.)
+    progress = 0,       -- Progress value (0-100)
+    message = "",       -- Status message
+    callback = nil,     -- Callback to run when all tasks complete
+    isRunning = false,  -- Is the task system currently running
+    silent = false,     -- Whether to show UI
     smoothProgress = 0, -- Smooth progress value for UI animation
     completionTime = 0  -- Time when tasks completed (for timeout handling)
 }
@@ -16,7 +16,7 @@ local Tasks = {
 -- Rate limiting help - sleep between requests to avoid hitting limits
 function Tasks.Sleep(ms)
     local start = globals.RealTime()
-    while globals.RealTime() < start + ms / 1000 do
+    while globals.RealTime() < start + ms / 700 do
         coroutine.yield()
     end
 end
@@ -48,7 +48,7 @@ function Tasks.Reset()
     Tasks.smoothProgress = 0
     Tasks.completionTime = 0
     Tasks.silent = false
-    
+
     -- Unregister any lingering callbacks
     callbacks.Unregister("Draw", "CDTasks_Complete")
 end
@@ -56,7 +56,7 @@ end
 -- Process the next available task
 function Tasks.Process()
     if not Tasks.isRunning then return end
-    
+
     -- Check if we need to hide the window after completion
     if Tasks.completionTime > 0 then
         local currentTime = globals.RealTime()
@@ -101,10 +101,10 @@ function Tasks.Process()
                 Tasks.status = "complete"
                 Tasks.message = "All tasks completed"
                 Tasks.progress = 100
-                
+
                 -- Set completion time for timeout
                 Tasks.completionTime = globals.RealTime()
-                
+
                 -- Execute callback if one exists
                 local callbackToRun = Tasks.callback
                 if callbackToRun then

@@ -75,7 +75,7 @@ local function InitializeSystems()
         -- If not found by SteamID, search by name
         if not found then
             local matches = 0
-            for steamId, data in pairs(G.Database.content or {}) do
+            for steamId, data in pairs(Database.content or {}) do
                 if data.Name and data.Name:lower():find(query:lower()) then
                     matches = matches + 1
                     print(string.format("[Database] Match %d: %s (SteamID: %s)", matches, data.Name, steamId))

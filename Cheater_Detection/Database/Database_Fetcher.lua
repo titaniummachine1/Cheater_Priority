@@ -18,12 +18,12 @@ local Fetcher = {}
 
 -- Configuration options
 Fetcher.Config = {
-    AutoFetchOnLoad = false,           -- Auto fetch when script loads
-    AutoSaveAfterFetch = true,         -- Automatically save database after fetching
-    NotifyOnFetchComplete = true,      -- Show notifications when fetch completes
-    ShowProgressBar = true,            -- Show the progress bar during fetch
-    AutoFetchInterval = 0,             -- Time in minutes between auto-fetches (0 = disabled)
-    LastAutoFetch = 0                  -- Timestamp of last auto-fetch
+    AutoFetchOnLoad = false,      -- Auto fetch when script loads
+    AutoSaveAfterFetch = true,    -- Automatically save database after fetching
+    NotifyOnFetchComplete = true, -- Show notifications when fetch completes
+    ShowProgressBar = true,       -- Show the progress bar during fetch
+    AutoFetchInterval = 0,        -- Time in minutes between auto-fetches (0 = disabled)
+    LastAutoFetch = 0             -- Timestamp of last auto-fetch
 }
 
 -- Export needed components
@@ -67,7 +67,7 @@ function Fetcher.FetchAll(database, callback, silent)
     Tasks.progress = 0
     Tasks.message = "Preparing to fetch sources..."
     Tasks.silent = silent or false
-    Tasks.smoothProgress = 0  -- Initialize smoothProgress for UI
+    Tasks.smoothProgress = 0 -- Initialize smoothProgress for UI
 
     local totalAdded = 0
 
@@ -98,33 +98,33 @@ end
 function Fetcher.AutoFetch(database)
     -- Set silent mode based on config
     local silent = not Fetcher.Config.ShowProgressBar
-    
+
     -- Get database reference if not provided
     if not database then
         local success, db = pcall(function()
             return require("Cheater_Detection.Database.Database")
         end)
-        
+
         if not success or not db then
             return false
         end
-        
+
         database = db
     end
-    
+
     -- Reset task system completely before starting new fetch
     Tasks.Reset()
-    
+
     -- Start fetch with appropriate silent mode
     return Fetcher.FetchAll(database, function(totalAdded)
-        if totalAdded > 0 and Fetcher.Config.AutoSaveAfterFetch then
+        if totalAdded and totalAdded > 0 and Fetcher.Config.AutoSaveAfterFetch then
             database.SaveDatabase()
-            
+
             if Fetcher.Config.NotifyOnFetchComplete then
                 printc(80, 200, 120, 255, "[Database] Auto-updated with " .. totalAdded .. " new entries")
             end
         end
-        
+
         -- Update last fetch time
         Fetcher.Config.LastAutoFetch = os.time()
     end, silent)
@@ -188,7 +188,7 @@ local function RegisterCommands()
             print("[Database Fetcher] A fetch operation is already in progress")
         end
     end, "Fetch all cheater lists and update the database")
-    
+
     -- Auto fetch toggle command
     Commands.Register("cd_autofetch", function(args)
         if #args >= 1 then
@@ -203,10 +203,11 @@ local function RegisterCommands()
         else
             -- Toggle mode
             Fetcher.Config.AutoFetchOnLoad = not Fetcher.Config.AutoFetchOnLoad
-            print("[Database Fetcher] Auto-fetch on load: " .. (Fetcher.Config.AutoFetchOnLoad and "ENABLED" or "DISABLED"))
+            print("[Database Fetcher] Auto-fetch on load: " ..
+            (Fetcher.Config.AutoFetchOnLoad and "ENABLED" or "DISABLED"))
         end
     end, "Toggle auto-fetch on script load")
-    
+
     -- Set update interval command
     Commands.Register("cd_fetch_interval", function(args)
         if #args >= 1 then
@@ -222,7 +223,8 @@ local function RegisterCommands()
                 print("[Database Fetcher] Invalid interval. Usage: cd_fetch_interval <minutes>")
             end
         else
-            print(string.format("[Database Fetcher] Current auto-fetch interval: %d minutes", Fetcher.Config.AutoFetchInterval))
+            print(string.format("[Database Fetcher] Current auto-fetch interval: %d minutes",
+                Fetcher.Config.AutoFetchInterval))
         end
     end, "Set auto-fetch interval in minutes (0 to disable)")
 
@@ -429,23 +431,23 @@ local function OnDraw()
                 draw.Color(220, 240, 255, pulseAlpha)
                 draw.FilledRect(glowPos - 2, barY, glowPos + 2, barY + barHeight)
             end
-            
+
             -- If task is completed, show completion message
             if Tasks.completionTime > 0 then
                 local timeLeft = math.ceil(2.0 - (globals.RealTime() - Tasks.completionTime))
                 local closeMsg = string.format("Closing in %d...", timeLeft)
-                
+
                 draw.Color(255, 255, 255, 200)
                 draw.Text(x + width - padding - draw.GetTextSize(closeMsg), y + padding, closeMsg)
             end
         end
     end
-    
+
     -- Check if we need to auto-fetch based on interval
     if Fetcher.Config.AutoFetchInterval > 0 and not Tasks.isRunning then
         local currentTime = os.time()
         local nextFetchTime = Fetcher.Config.LastAutoFetch + (Fetcher.Config.AutoFetchInterval * 60)
-        
+
         if currentTime >= nextFetchTime then
             Fetcher.AutoFetch()
         end
