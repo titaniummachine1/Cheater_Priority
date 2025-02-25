@@ -6,11 +6,11 @@ PlayerData = {}
 --- @alias PlayerCurrent { Angle: EulerAngles, Position: Vector3, SimTime: number }
 --- @alias PlayerState { Strikes: number, IsCheater: boolean }
 --- @alias Globals.PlayerData table<number, { Entity: any, History: PlayerHistory, Current: PlayerCurrent, Info: PlayerState }>
-Globals.DefaultPlayerData = {
+PlayerData.DefaultPlayerData = {
     Entity = nil,
         info = {
             Name = "NN",
-            Cause = "None",
+            Proof = "None",
             Date = os.date("%Y-%m-%d %H:%M:%S"),
             Strikes = 0,
             IsCheater = false,
@@ -18,7 +18,7 @@ Globals.DefaultPlayerData = {
             bhop = 0,
             LastOnGround = true,
             LastVelocity = Vector3(0,0,0),
-            Class = 2,
+            Class = 0,
         },
 
         Current = {
@@ -29,7 +29,7 @@ Globals.DefaultPlayerData = {
             },
             SimTime = 0,
             onGround = true,
-            FiredGun = 0,
+            FiredGun = false,
         },
 
         History = {
@@ -42,9 +42,17 @@ Globals.DefaultPlayerData = {
                 SimTime = 0,
                 onGround = true,
                 StdDev = 1,
-                FiredGun = 0,
+                FiredGun = false,
             },
         },
 }
+
+PlayerData.defaultRecord = {
+    Name = "NN",
+    Cause = "Known Cheater",
+    Date = os.date("%Y-%m-%d %H:%M:%S"),
+}
+
+
 
 return playerData
