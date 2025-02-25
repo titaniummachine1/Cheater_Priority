@@ -102,7 +102,7 @@ function Database.ClearSuspect(steamId)
     end
 end
 
-Database_import.importDatabase()
+Database_import.importDatabase(Database)
 
 local function OnUnload() -- Called when the script is unloaded
     if Database.content then
