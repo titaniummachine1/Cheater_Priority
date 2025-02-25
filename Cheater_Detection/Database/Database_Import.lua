@@ -1,8 +1,10 @@
+--[[ Imports ]]
+local Common = require("Cheater_Detection.Utils.Common")
+local G = require("Cheater_Detection.Utils.Globals")
+
 local Database_Import = {}
 
-local Common = require("Cheater_Detection.Utils.Common")
 local Json = Common.Json
-local Log = Common.Log
 
 -- Utility function to trim whitespace from both ends of a string
 local function trim(s)
@@ -14,99 +16,53 @@ local Lua__fileName = Lua__fullPath:match("\\([^\\]-)$"):gsub("%.lua$", "")
 local folder_name = string.format([[Lua %s]], Lua__fileName)
 
 local function GetFilePath()
-    --creating file gives succes if it created and fail if it didnt create cuz it already exists but it always succeeds
-    local succes, fullPath = pcall(filesystem.CreateDirectory, folder_name)
+    local success, fullPath = filesystem.CreateDirectory(folder_name)
     return tostring(fullPath .. "/database.json")
 end
 
--- Safe update that validates data before adding to database
-function Database_Import.updateDatabase(steamID64, playerData, Database)
-    -- Validate inputs
-    if not steamID64 or not playerData or type(steamID64) ~= "string" or type(playerData) ~= "table" then
-        Log.Warning("Invalid data for database update")
-        return Database
-    end
-
-    -- Clone database to prevent direct modifications until we're sure everything is valid
-    local tempDatabase = Database or { content = {} }
-
-    -- Basic validation of steamID64 format (simplified check)
-    if not steamID64:match("^%d+$") or #steamID64 ~= 17 then
-        Log.Warning("Invalid steamID64 format: " .. steamID64)
-        return tempDatabase
-    end
-
-    -- Create transaction log
-    local transactionLog = {
-        timestamp = os.date("%Y-%m-%d %H:%M:%S"),
-        steamID64 = steamID64,
-        action = "update",
-        success = false
-    }
-
-    -- Attempt to update the database
-    local success, result = pcall(function()
-        local existingData = tempDatabase.content[steamID64]
-
-        if existingData then
-            -- Only update fields if they are valid
-            if playerData.Name and type(playerData.Name) == "string" and playerData.Name ~= "Unknown" then
-                existingData.Name = playerData.Name
-            end
-            if playerData.proof and type(playerData.proof) == "string" then
-                existingData.proof = playerData.proof
-            end
-            if playerData.date and type(playerData.date) == "string" then
-                existingData.date = playerData.date
-            end
-        else
-            -- Add new entry
-            tempDatabase.content[steamID64] = {
-                Name = playerData.Name or "Unknown",
-                proof = playerData.proof or "Known Cheater",
-                date = playerData.date or os.date("%Y-%m-%d %H:%M:%S")
-            }
-
-            -- Only mark as cheater if we're confident
-            if playerData.proof and playerData.proof ~= "" then
-                playerlist.SetPriority(steamID64, 10)
-            end
+-- Enhance data update checking and handling
+function Database_Import.updateDatabase(steamID64, playerData)
+    -- Basic validation
+    if not steamID64 or not playerData then return end
+    
+    local existingData = G.DataBase[steamID64]
+    if existingData then
+        -- Only update fields if they are not nil and valid
+        if playerData.Name and type(playerData.Name) == "string" and playerData.Name ~= "Unknown" then
+            existingData.Name = playerData.Name
         end
-
-        return tempDatabase
-    end)
-
-    -- Log result
-    transactionLog.success = success
-    if not success then
-        Log.Warning("Database update failed: " .. tostring(result))
-        Log.Debug("Failed transaction: " .. Json.encode(transactionLog))
-        return Database -- Return original database on failure
+        if playerData.cause and type(playerData.cause) == "string" then
+            existingData.cause = playerData.cause
+        end
+        if playerData.date and type(playerData.date) == "string" then
+            existingData.date = playerData.date
+        end
+        -- Ensure numeric fields are numbers
+        if playerData.strikes then
+            existingData.strikes = tonumber(playerData.strikes) or 0
+        end
+    else
+        -- Create new entry with safe defaults
+        G.DataBase[steamID64] = {
+            Name = playerData.Name or "Unknown",
+            cause = playerData.cause or "Known Cheater",
+            date = playerData.date or os.date("%Y-%m-%d %H:%M:%S"),
+            strikes = tonumber(playerData.strikes) or 0
+        }
+        playerlist.SetPriority(steamID64, 10)
     end
-
-    Log.Debug("Database update completed: " .. Json.encode(transactionLog))
-    return result -- Return updated database
 end
 
--- Function to safely process raw ID data with error handling
-function Database_Import.processRawIDs(content, Database)
-    if not content or content == "" then
-        Log.Warning("Empty content for processing")
-        return Database
-    end
-
-    local tempDatabase = Database or { content = {} }
+-- Function to process raw ID data, handling SteamID64 and SteamID formats
+function Database_Import.processRawIDs(content)
     local date = os.date("%Y-%m-%d %H:%M:%S")
-    local processedCount = 0
-    local errorCount = 0
-
     for line in content:gmatch("[^\r\n]+") do
         line = trim(line)
-        if line ~= "" and not line:match("^%-%-") then -- Skip comments and empty lines
+        if not line:match("^%-%-") then  -- Skip comment lines
             local steamID64
             local success, result = pcall(function()
-                if line:match("^%d+$") and #line == 17 then
-                    return line -- Already SteamID64
+                if line:match("^%d+$") then
+                    return line
                 elseif line:match("STEAM_0:%d:%d+") then
                     return steam.ToSteamID64(line)
                 elseif line:match("^%[U:1:%d+%]$") then
@@ -114,199 +70,120 @@ function Database_Import.processRawIDs(content, Database)
                 end
                 return nil
             end)
-
+            
             steamID64 = success and result or nil
-
+            
             if steamID64 then
-                tempDatabase = Database_Import.updateDatabase(steamID64, {
+                Database_Import.updateDatabase(steamID64, {
                     Name = "Unknown",
-                    proof = "Known Cheater (imported)",
-                    date = date
-                }, tempDatabase)
-                processedCount = processedCount + 1
-            else
-                errorCount = errorCount + 1
-                Log.Debug("Failed to process ID: " .. line)
+                    cause = "Known Cheater",
+                    date = date,
+                })
             end
         end
     end
-
-    Log.Info(string.format("Processed %d IDs with %d errors", processedCount, errorCount))
-    return tempDatabase
 end
 
--- Process more complex import data with validation
-function Database_Import.processImportedData(data, Database)
-    if not data or type(data) ~= "table" or not data.players or type(data.players) ~= "table" then
-        Log.Warning("Invalid imported data structure")
-        return Database
+-- Process each item in the imported data
+function Database_Import.processImportedData(data)
+    if not data or not data.players or type(data.players) ~= "table" then 
+        return
     end
-
-    local tempDatabase = Database or { content = {} }
-    local processedCount = 0
-    local errorCount = 0
-
+    
     for _, player in ipairs(data.players) do
-        local success, result = pcall(function()
-            if not player or type(player) ~= "table" or not player.steamid then
-                return nil
-            end
+        -- Skip invalid entries
+        if not player or not player.steamid then goto continue end
+        
+        local steamID64
+        local playerName = player.last_seen and player.last_seen.player_name or "Unknown"
 
-            local steamID64
-            local playerName = player.last_seen and player.last_seen.player_name or "Unknown"
-
-            -- Validate name
-            if not playerName or playerName == "" or #playerName < 3 then
-                playerName = "Unknown"
-            end
-
-            -- Create player details
-            local playerDetails = {
-                Name = playerName,
-                proof = (player.attributes and table.concat(player.attributes, ", ")) or "Known Cheater",
-                date = player.last_seen and os.date("%Y-%m-%d %H:%M:%S", player.last_seen.time) or
-                os.date("%Y-%m-%d %H:%M:%S")
-            }
-
-            -- Convert steamID to steamID64
-            if player.steamid:match("^%[U:1:%d+%]$") then
-                steamID64 = steam.ToSteamID64(player.steamid)
-            elseif player.steamid:match("^%d+$") and #player.steamid <= 10 then
-                local steam3 = Common.FromSteamid32To64(player.steamid)
-                steamID64 = steam.ToSteamID64(steam3)
-            elseif player.steamid:match("^%d+$") and #player.steamid == 17 then
-                steamID64 = player.steamid -- Already SteamID64
-            end
-
-            return { steamID64 = steamID64, details = playerDetails }
-        end)
-
-        if success and result and result.steamID64 then
-            tempDatabase = Database_Import.updateDatabase(result.steamID64, result.details, tempDatabase)
-            processedCount = processedCount + 1
-        else
-            errorCount = errorCount + 1
-            Log.Debug("Failed to process imported player data")
+        -- Set the name to "Unknown" if it is empty or too short
+        if not playerName or playerName == "" or #playerName < 3 then
+            playerName = "Unknown"
         end
-    end
 
-    Log.Info(string.format("Imported %d players with %d errors", processedCount, errorCount))
-    return tempDatabase
+        local playerDetails = {
+            Name = playerName,
+            cause = (player.attributes and table.concat(player.attributes, ", ")) or "Known Cheater",
+            date = player.last_seen and os.date("%Y-%m-%d %H:%M:%S", player.last_seen.time) or os.date("%Y-%m-%d %H:%M:%S")
+        }
+
+        -- Safely convert steamID to steamID64
+        local success, id = pcall(function()
+            if player.steamid:match("^%[U:1:%d+%]$") then
+                return steam.ToSteamID64(player.steamid)
+            elseif player.steamid:match("^%d+$") then
+                local steam3 = Common.FromSteamid32To64(player.steamid)
+                return steam.ToSteamID64(steam3)
+            else
+                return player.steamid  -- Already SteamID64
+            end
+        end)
+        
+        steamID64 = success and id or nil
+
+        if steamID64 then
+            Database_Import.updateDatabase(steamID64, playerDetails)
+        end
+        
+        ::continue::
+    end
 end
 
--- Safely read file content
+-- Simplify file handling using a utility function
 function Database_Import.readFromFile(filePath)
-    local success, fileOrError = pcall(io.open, filePath, "r")
-    if not success or not fileOrError then
-        Log.Warning("Failed to open file: " .. filePath)
+    local file = io.open(filePath, "r")
+    if not file then
         return nil
     end
-
-    local success, contentOrError = pcall(function()
-        local content = fileOrError:read("*a")
-        fileOrError:close()
-        return content
-    end)
-
-    if not success then
-        Log.Warning("Failed to read file: " .. filePath)
-        pcall(function() fileOrError:close() end) -- Try to close if still open
-        return nil
-    end
-
-    return contentOrError
+    local content = file:read("*a")
+    file:close()
+    return content
 end
 
--- Import and process database files with transaction-like safety
-function Database_Import.importDatabase(Database)
-    local baseFilePath = GetFilePath():gsub("database.json", "")
+-- Import and process database files
+function Database_Import.importDatabase()
+    -- Initialize database if it doesn't exist
+    G.DataBase = G.DataBase or {}
+    
+    local baseFilePath = GetFilePath():gsub("database.json", "")  -- Ensure the correct base path
     local importPath = baseFilePath .. "/import/"
 
-    -- Create a backup before making changes
-    local backupDatabase = {}
-    if Database and Database.content then
-        for k, v in pairs(Database.content) do
-            backupDatabase[k] = v
-        end
-    end
-
     -- Ensure the import directory exists
-    local success = pcall(filesystem.CreateDirectory, importPath)
+    local success, dirPath = pcall(filesystem.CreateDirectory, importPath)
     if not success then
-        Log.Warning("Failed to create import directory")
-        return Database
+        print("Failed to create import directory")
+        return
     end
+    
+    -- Count processed files
+    local fileCount = 0
 
-    -- Process all files in the directory
-    local totalFiles = 0
-    local processedFiles = 0
-    local failedFiles = 0
-
-    local tempDatabase = Database or { content = {} }
-
-    -- Count files first for progress tracking
-    filesystem.EnumerateDirectory(importPath .. "/*", function(filename)
-        if filename ~= "." and filename ~= ".." then
-            totalFiles = totalFiles + 1
-        end
-    end)
-
-    Log.Info("Starting import of " .. totalFiles .. " files")
-
-    -- Process each file
+    -- Enumerate all files in the import directory
     filesystem.EnumerateDirectory(importPath .. "/*", function(filename, attributes)
-        if filename == "." or filename == ".." then
-            return -- Skip directory entries
-        end
-
         local fullPath = importPath .. filename
         local content = Database_Import.readFromFile(fullPath)
-
         if content then
-            local beforeCount = 0
-            for _ in pairs(tempDatabase.content) do beforeCount = beforeCount + 1 end
-
-            local fileSuccess, result = pcall(function()
+            local success, errMsg = pcall(function()
                 if Common.isJson(content) then
-                    local data, err = Json.decode(content)
+                    local data = Json.decode(content)
                     if data then
-                        return Database_Import.processImportedData(data, tempDatabase)
-                    else
-                        Log.Warning("Error decoding JSON from file: " .. filename)
-                        return tempDatabase
+                        Database_Import.processImportedData(data)
+                        fileCount = fileCount + 1
                     end
                 else
-                    return Database_Import.processRawIDs(content, tempDatabase)
+                    Database_Import.processRawIDs(content)
+                    fileCount = fileCount + 1
                 end
             end)
-
-            if fileSuccess then
-                tempDatabase = result
-                processedFiles = processedFiles + 1
-
-                local afterCount = 0
-                for _ in pairs(tempDatabase.content) do afterCount = afterCount + 1 end
-
-                Log.Info(string.format("Processed file %s: added %d entries",
-                    filename, afterCount - beforeCount))
-            else
-                failedFiles = failedFiles + 1
-                Log.Warning("Failed to process file: " .. filename)
+            
+            if not success then
+                print("Error processing file: " .. filename .. " - " .. tostring(errMsg))
             end
-        else
-            failedFiles = failedFiles + 1
         end
     end)
-
-    -- Report import results
-    if processedFiles > 0 then
-        Log.Info(string.format("Import completed: %d files processed, %d files failed",
-            processedFiles, failedFiles))
-        return tempDatabase
-    else
-        Log.Warning("Import failed: No files could be processed")
-        return Database -- Return original database on complete failure
-    end
+    
+    print("Imported data from " .. fileCount .. " files")
 end
 
 return Database_Import

@@ -83,4 +83,14 @@ function Config.LoadCFG()
     end
 end
 
+local function OnUnload() -- Called when the script is unloaded
+    Config.CreateCFG(G.Menu) -- Save the configurations
+end
+
+--[[ Unregister previous callbacks ]]--
+callbacks.Unregister("Unload", "CDConfig_Unload")                                -- unregister the "Unload" callback
+--[[ Register callbacks ]]--
+callbacks.Register("Unload", "CDConfig_Unload", OnUnload)                         -- Register the "Unload" callback
+
+
 return Config

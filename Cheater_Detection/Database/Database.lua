@@ -14,8 +14,31 @@ local Lua__fileName = Lua__fullPath:match("\\([^\\]-)$"):gsub("%.lua$", "")
 local folder_name = string.format([[Lua %s]], Lua__fileName)
 
 function Database.GetFilePath()
-    local success, fullPath = filesystem.CreateDirectory(folder_name)
-    return tostring(fullPath .. "/database.json")
+    -- Fixed the directory creation function to properly handle return values
+    local function createDatabaseDirectory()
+        -- Make sure folder_name is valid
+        local dirName = folder_name or "Lua Cheater_Detection"
+
+        -- CreateDirectory returns success (boolean) and path (string)
+        local dirCreated, dirPath = filesystem.CreateDirectory(dirName)
+
+        -- Check if the path is valid
+        if type(dirPath) == "string" and dirPath ~= "" then
+            return dirPath .. "/database.json"
+        else
+            -- Fallback if the path wasn't returned correctly
+            return dirName .. "/database.json"
+        end
+    end
+
+    -- Use pcall to catch any errors
+    local success, result = pcall(createDatabaseDirectory)
+    if not success then
+        print("Error in GetFilePath: " .. tostring(result))
+        return "Lua Cheater_Detection/database.json" -- Default path
+    end
+
+    return result
 end
 
 function Database.SaveDatabase(DataBaseTable)
@@ -54,12 +77,13 @@ end
 
 function Database.LoadDatabase()
     local filepath = Database.GetFilePath()
-    local status, file = pcall(io.open, filepath, "r")
-    if status and file then
+    local file, err = io.open(filepath, "r")
+
+    if file then
         local content = file:read("*a")
         file:close()
 
-        local loadedDatabase, pos, decodeErr = Json.decode(content, 1, nil)
+        local loadedDatabase, pos, decodeErr = Json.decode(content, 1)
 
         if decodeErr then
             print("Error loading database:", decodeErr)
@@ -70,7 +94,7 @@ function Database.LoadDatabase()
             Database.content = loadedDatabase or {}
         end
     else
-        print("Failed to load database. Error: " .. tostring(file))
+        print("Failed to load database. Error: " .. tostring(err))
         Database.content = {}
         Database.SaveDatabase()
     end
@@ -80,12 +104,20 @@ function Database.GetRecord(steamId)
     return Database.content[steamId]
 end
 
+-- Also modify the accessor methods to provide safe defaults and type checking
 function Database.GetStrikes(steamId)
-    return Database.content[steamId].strikes
+    if not steamId or not Database.content[steamId] then
+        return 0 -- Safe default
+    end
+    return tonumber(Database.content[steamId].strikes) or 0
 end
 
+-- Also modify the accessor methods to provide safe defaults and type checking
 function Database.GetProof(steamId)
-    return Database.content[steamId].Proof
+    if not steamId or not Database.content[steamId] then
+        return "Unknown" -- Safe default
+    end
+    return Database.content[steamId].proof or "Unknown"
 end
 
 function Database.GetDate(steamId)
@@ -102,8 +134,6 @@ function Database.ClearSuspect(steamId)
     end
 end
 
-Database_import.importDatabase(Database)
-
 local function OnUnload() -- Called when the script is unloaded
     if Database.content then
         if G.Menu.Main.debug then
@@ -116,10 +146,14 @@ local function OnUnload() -- Called when the script is unloaded
     end
 end
 
---[[ Unregister previous callbacks ]]--
-callbacks.Unregister("Unload", "CDDatabase_Unload")                                -- unregister the "Unload" callback
---[[ Register callbacks ]]--
-callbacks.Register("Unload", "CDDatabase_Unload", OnUnload)                         -- Register the "Unload" callback
+--ImprotLocal databasees
+Database_import.importDatabase(Database)
+
+
+--[[ Unregister previous callbacks ]]                       --
+callbacks.Unregister("Unload", "CDDatabase_Unload")         -- unregister the "Unload" callback
+--[[ Register callbacks ]]                                  --
+callbacks.Register("Unload", "CDDatabase_Unload", OnUnload) -- Register the "Unload" callback
 
 
 return Database

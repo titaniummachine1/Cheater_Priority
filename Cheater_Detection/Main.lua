@@ -12,7 +12,6 @@ local Common = require("Cheater_Detection.Utils.Common")
 local G = require("Cheater_Detection.Utils.Globals")
 local Config = require("Cheater_Detection.Utils.Config")
 local Database = require("Cheater_Detection.Database.Database")
-local Database_import = require("Cheater_Detection.Database.Database_Import")
 --local Detections = require("Cheater_Detection.Detections")
 --require("Cheater_Detection.Visuals") --wake up the visuals
 --require("Cheater_Detection.Modules.EventHandler") --wake up the visuals
@@ -24,7 +23,6 @@ local WPlayer, PR = Common.WPlayer, Common.PlayerResource
 
 Config.LoadCFG() --load config on load of script
 Database.LoadDatabase() --load database inicialy to have stable databse first before loadign imports
-Database_import.importDatabase() --import the database after loading main one to avoid geting trolled by empty imports
 
 playerlist.SetPriority(entities.GetLocalPlayer(), 0) --debug
 
