@@ -25,39 +25,41 @@ require("Cheater_Detection.Misc.Visuals.Menu")
 
 --[[ Variables ]]
 local WPlayer, PR = Common.WPlayer, Common.PlayerResource
+local Commands = Common.Lib.Utils.Commands
 
 --[[ Initialize systems ]]
 local function InitializeSystems()
     -- Load config
     Config.LoadCFG()
-    
+
     -- Initialize database system through manager (this handles loading, importing and auto-fetching)
     G.Database = DBManager.Initialize({
-        AutoFetchOnLoad = true,  -- Automatically fetch updates on startup
-        CheckInterval = 24       -- Check for updates every 24 hours
+        AutoFetchOnLoad = true, -- Automatically fetch updates on startup
+        CheckInterval = 24      -- Check for updates every 24 hours
     })
-    
+
     -- Clear local player from cheater list (for debugging)
     local localPlayer = entities.GetLocalPlayer()
     if localPlayer then
         local mySteamID = Common.GetSteamID64(localPlayer)
         playerlist.SetPriority(mySteamID, 0)
     end
-    
+
     -- Print initialization message
     local dbStats = DBManager.GetStats()
-    printc(100, 255, 100, 255, string.format("[Cheater Detection] Initialized with %d database entries", dbStats.totalEntries))
-    
+    printc(100, 255, 100, 255,
+        string.format("[Cheater Detection] Initialized with %d database entries", dbStats.totalEntries))
+
     -- Register console commands for database management
     Commands.Register("cd_check", function(args)
         if #args < 1 then
             print("Usage: cd_check <steamid or name fragment>")
             return
         end
-        
+
         local query = args[1]
         local found = false
-        
+
         -- Check if it's a valid SteamID
         if query:match("^%d+$") and #query >= 17 then
             local record = G.Database.GetRecord(query)
@@ -69,7 +71,7 @@ local function InitializeSystems()
                 print(string.format("  Date: %s", record.date or "Unknown"))
             end
         end
-        
+
         -- If not found by SteamID, search by name
         if not found then
             local matches = 0
@@ -79,7 +81,7 @@ local function InitializeSystems()
                     print(string.format("[Database] Match %d: %s (SteamID: %s)", matches, data.Name, steamId))
                     print(string.format("  Cause: %s", data.cause or "Unknown"))
                     print(string.format("  Date: %s", data.date or "Unknown"))
-                    
+
                     -- Limit to 5 matches to avoid spam
                     if matches >= 5 then
                         print(string.format("[Database] Found more matches, showing first 5 only"))
@@ -87,7 +89,7 @@ local function InitializeSystems()
                     end
                 end
             end
-            
+
             if matches == 0 then
                 print(string.format("[Database] No records found for: %s", query))
             end
@@ -95,7 +97,7 @@ local function InitializeSystems()
     end, "Check if a player is in the cheat database")
 end
 
---[[ Update the player data every tick ]]--
+--[[ Update the player data every tick ]] --
 local function OnCreateMove(cmd)
     local DebugMode = G.Menu.Main.debug
     G.pLocal = entities.GetLocalPlayer()
@@ -140,7 +142,8 @@ local function OnCreateMove(cmd)
             local simulationTime = wrappedPlayer:GetSimulationTime()
 
             -- Gather player data
-            G.PlayerData[steamid].Current = Common.createRecord(viewAngles, viewPos, headHitboxPosition, bodyHitboxPosition, simulationTime, isOnGround)
+            G.PlayerData[steamid].Current = Common.createRecord(viewAngles, viewPos, headHitboxPosition,
+                bodyHitboxPosition, simulationTime, isOnGround)
 
             -- Perform detection checks (when Detections module is enabled)
             if Detections then
@@ -160,7 +163,7 @@ local function OnCreateMove(cmd)
                 table.remove(G.PlayerData[steamid].History, 1)
             end
         end
-        
+
         ::continue::
     end
 end
@@ -173,13 +176,13 @@ InitializeSystems()
 
 -- Provide global access to main module functions
 return {
-    ReloadDatabase = function() 
-        G.Database = DBManager.Initialize({AutoFetchOnLoad = true})
+    ReloadDatabase = function()
+        G.Database = DBManager.Initialize({ AutoFetchOnLoad = true })
     end,
-    
+
     UpdateDatabase = function()
         DBManager.ForceUpdate()
     end,
-    
+
     GetDatabaseStats = DBManager.GetStats
 }

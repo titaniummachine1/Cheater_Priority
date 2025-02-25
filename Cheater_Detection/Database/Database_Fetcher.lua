@@ -112,8 +112,8 @@ function Fetcher.AutoFetch(database)
         database = db
     end
     
-    -- Force Tasks.isRunning to false before starting a new fetch to reset any stuck state
-    Tasks.isRunning = false
+    -- Reset task system completely before starting new fetch
+    Tasks.Reset()
     
     -- Start fetch with appropriate silent mode
     return Fetcher.FetchAll(database, function(totalAdded)
@@ -285,18 +285,12 @@ end
 
 -- Draw callback to process tasks and render a stylish progress indicator
 local function OnDraw()
-    -- Always process tasks if we're running, even if UI is disabled
+    -- Always process tasks if we're running
     if Tasks.isRunning then
         Tasks.Process()
 
         -- Draw progress indicator if enabled and not in silent mode
         if Fetcher.Config.ShowProgressBar and not Tasks.silent and Tasks.status ~= "idle" then
-            -- Debug - force visibility for testing
-            local debugMsg = "[DEBUG] Task active: " .. Tasks.message .. " (" .. Tasks.progress .. "%)"
-            draw.Color(255, 0, 0, 255)
-            draw.SetFont(draw.CreateFont("Arial", 12, 400))
-            draw.Text(10, 120, debugMsg)
-            
             -- Set up basic dimensions and styles
             local x, y = 15, 15
             local width = 260
@@ -310,10 +304,10 @@ local function OnDraw()
 
             -- Calculate smooth progress (to avoid jumpy bar)
             local targetProgress = Tasks.progress / 100
-            Tasks.smoothProgress = Tasks.smoothProgress or 0
+            if not Tasks.smoothProgress then Tasks.smoothProgress = 0 end
             Tasks.smoothProgress = Tasks.smoothProgress + (targetProgress - Tasks.smoothProgress) * 0.1
 
-            -- Ensure all drawing coordinates are integers
+            -- Ensure all drawing coordinates are integers to prevent cursor bit overflow
             x, y = math.floor(x), math.floor(y)
             width, height = math.floor(width), math.floor(height)
             padding, barHeight = math.floor(padding), math.floor(barHeight)
@@ -331,7 +325,7 @@ local function OnDraw()
             draw.OutlinedCircle(x + cornerRadius, y + height - cornerRadius, cornerRadius, 12)
             draw.OutlinedCircle(x + width - cornerRadius, y + height - cornerRadius, cornerRadius, 12)
 
-            -- Fill the corners
+            -- Fill the corners (ensure all coordinates are integers)
             draw.Color(20, 20, 20, 220)
             for i = 0, cornerRadius do
                 draw.FilledRect(x, y + cornerRadius - i, x + cornerRadius - i, y + cornerRadius + 1)
@@ -403,7 +397,7 @@ local function OnDraw()
 
             -- Progress bar fill with gradient
             local progressWidth = math.floor((width - 2 * padding) * Tasks.smoothProgress)
-            local progressEnd = x + padding + progressWidth
+            local progressEnd = math.floor(x + padding + progressWidth) -- Ensure integer
 
             -- Progress gradient - blue to cyan
             draw.Color(30, 120, 255, 255)
@@ -430,10 +424,19 @@ local function OnDraw()
 
             -- Add animated glow at the progress edge
             if progressWidth > 0 then
-                local glowPos = x + padding + progressWidth
+                local glowPos = math.floor(x + padding + progressWidth) -- Ensure integer
                 local pulseAlpha = math.floor(120 * pulseFactor)
                 draw.Color(220, 240, 255, pulseAlpha)
                 draw.FilledRect(glowPos - 2, barY, glowPos + 2, barY + barHeight)
+            end
+            
+            -- If task is completed, show completion message
+            if Tasks.completionTime > 0 then
+                local timeLeft = math.ceil(2.0 - (globals.RealTime() - Tasks.completionTime))
+                local closeMsg = string.format("Closing in %d...", timeLeft)
+                
+                draw.Color(255, 255, 255, 200)
+                draw.Text(x + width - padding - draw.GetTextSize(closeMsg), y + padding, closeMsg)
             end
         end
     end
@@ -456,12 +459,21 @@ callbacks.Register("Draw", "CDFetcher", OnDraw)
 -- Register commands when the script is loaded
 RegisterCommands()
 
--- Run auto-fetch if enabled - use callbacks.Run to ensure it happens immediately
+-- Safety measure: Reset the task system on script load to clear any potential leftover state
+Tasks.Reset()
+
+-- Run auto-fetch if enabled - delay slightly to ensure everything is initialized
 if Fetcher.Config.AutoFetchOnLoad then
-    callbacks.Run(function()
-        -- Set ShowProgressBar to true to make the loading window visible
-        Fetcher.Config.ShowProgressBar = true
-        Fetcher.AutoFetch()
+    callbacks.Register("Draw", "CDFetcher_FirstRun", function()
+        callbacks.Unregister("Draw", "CDFetcher_FirstRun")
+        -- Schedule with a brief delay
+        callbacks.Run(function()
+            -- Make sure task system is reset
+            Tasks.Reset()
+            -- Set ShowProgressBar to true to make the loading window visible
+            Fetcher.Config.ShowProgressBar = true
+            Fetcher.AutoFetch()
+        end)
     end)
 end
 

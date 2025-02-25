@@ -9,7 +9,8 @@ local Tasks = {
     callback = nil,    -- Callback to run when all tasks complete
     isRunning = false, -- Is the task system currently running
     silent = false,    -- Whether to show UI
-    smoothProgress = 0 -- Smooth progress value for UI animation
+    smoothProgress = 0, -- Smooth progress value for UI animation
+    completionTime = 0  -- Time when tasks completed (for timeout handling)
 }
 
 -- Rate limiting help - sleep between requests to avoid hitting limits
@@ -30,13 +31,40 @@ function Tasks.Add(taskFn, description, weight)
 
     -- Start processing if not already running
     Tasks.isRunning = true
+    Tasks.completionTime = 0 -- Reset completion timestamp
 
     return #Tasks.queue
+end
+
+-- Reset task system state completely
+function Tasks.Reset()
+    Tasks.queue = {}
+    Tasks.current = nil
+    Tasks.status = "idle"
+    Tasks.progress = 0
+    Tasks.message = ""
+    Tasks.isRunning = false
+    Tasks.callback = nil
+    Tasks.smoothProgress = 0
+    Tasks.completionTime = 0
+    Tasks.silent = false
+    
+    -- Unregister any lingering callbacks
+    callbacks.Unregister("Draw", "CDTasks_Complete")
 end
 
 -- Process the next available task
 function Tasks.Process()
     if not Tasks.isRunning then return end
+    
+    -- Check if we need to hide the window after completion
+    if Tasks.completionTime > 0 then
+        local currentTime = globals.RealTime()
+        if currentTime - Tasks.completionTime >= 2.0 then
+            Tasks.Reset() -- Reset the entire task system
+            return
+        end
+    end
 
     -- If we have no current coroutine but have tasks in queue
     if not Tasks.current and #Tasks.queue > 0 then
@@ -48,7 +76,7 @@ function Tasks.Process()
     -- If we have a current task, resume it
     if Tasks.current then
         local co = Tasks.current.co
-        local success, result = coroutine.resume(co)
+        local success, result = pcall(coroutine.resume, co)
 
         if not success then
             -- Error occurred
@@ -56,6 +84,8 @@ function Tasks.Process()
             Tasks.current = nil
             Tasks.status = "error"
             Tasks.message = "Error: " .. tostring(result)
+            -- Set completion time for timeout
+            Tasks.completionTime = globals.RealTime()
         elseif coroutine.status(co) == "dead" then
             -- Task completed
             local completedTask = Tasks.current
@@ -71,40 +101,26 @@ function Tasks.Process()
                 Tasks.status = "complete"
                 Tasks.message = "All tasks completed"
                 Tasks.progress = 100
-
+                
+                -- Set completion time for timeout
+                Tasks.completionTime = globals.RealTime()
+                
                 -- Execute callback if one exists
-                local taskCallback = Tasks.callback
-
-                -- Delay marking as not running until after callback to ensure UI shows 100%
-                callbacks.Run(function()
-                    if taskCallback then
-                        taskCallback(result)
-                    end
-
-                    -- Wait briefly before marking as complete so UI can show 100%
-                    callbacks.Register("Draw", "CDTasks_Complete", function()
-                        Tasks.isRunning = false
-                        Tasks.callback = nil
-                        callbacks.Unregister("Draw", "CDTasks_Complete")
-                    end)
-                end)
+                local callbackToRun = Tasks.callback
+                if callbackToRun then
+                    -- Clear callback before running it to prevent issues
+                    Tasks.callback = nil
+                    callbackToRun(result)
+                end
             end
-
-            -- Return the result from the completed task
-            return result
         end
     end
 end
 
 -- Cancel all tasks
 function Tasks.CancelAll()
-    Tasks.queue = {}
-    Tasks.current = nil
-    Tasks.status = "idle"
-    Tasks.progress = 0
-    Tasks.message = "Tasks cancelled"
-    Tasks.isRunning = false
-    Tasks.callback = nil
+    Tasks.Reset()
+    print("[Database Fetcher] All tasks cancelled")
 end
 
 -- Debug function to print task status
