@@ -4,9 +4,8 @@ local Common = require("Cheater_Detection.Utils.Common")
 local Database_Import = {}
 
 local Json = Common.Json
-local Log = Common.Log or { Warning = print, Info = print, Debug = function() end }
 
--- Utility function to trim whitespace from both ends of a string
+-- Utility function to trim whitespace
 local function trim(s)
     return s:match('^%s*(.-)%s*$') or ''
 end
@@ -24,10 +23,9 @@ end
 function Database_Import.updateDatabase(steamID64, playerData, Database)
     -- Basic validation
     if not steamID64 or not playerData or not Database then return end
-
-    -- Initialize content if it doesn't exist
+    
     Database.content = Database.content or {}
-
+    
     local existingData = Database.content[steamID64]
     if existingData then
         -- Only update fields if they are not nil
@@ -43,8 +41,8 @@ function Database_Import.updateDatabase(steamID64, playerData, Database)
     else
         -- Mark as cheater in playerlist
         playerlist.SetPriority(steamID64, 10)
-
-        -- Add new entry to database
+        
+        -- Add new entry
         Database.content[steamID64] = {
             Name = playerData.Name or "Unknown",
             cause = playerData.cause or "Known Cheater",
@@ -53,10 +51,10 @@ function Database_Import.updateDatabase(steamID64, playerData, Database)
     end
 end
 
--- Process raw ID data (now accepts Database parameter)
+-- Process raw ID data
 function Database_Import.processRawIDs(content, Database)
     if not content or not Database then return end
-
+    
     local date = os.date("%Y-%m-%d %H:%M:%S")
     for line in content:gmatch("[^\r\n]+") do
         line = trim(line)
@@ -80,38 +78,35 @@ function Database_Import.processRawIDs(content, Database)
                     Name = "Unknown",
                     cause = "Known Cheater",
                     date = date,
-                }, Database) -- Pass Database parameter
+                }, Database)
             end
         end
     end
 end
 
--- Process imported data (now accepts Database parameter)
+-- Process imported data
 function Database_Import.processImportedData(data, Database)
-    if not data or not data.players or type(data.players) ~= "table" or not Database then
-        return
-    end
+    if not data or not data.players or not Database then return end
 
     for _, player in ipairs(data.players) do
-        -- Skip invalid entries
         if not player or not player.steamid then goto continue end
 
         local steamID64
         local playerName = player.last_seen and player.last_seen.player_name or "Unknown"
-
-        -- Set the name to "Unknown" if it is empty or too short
+        
+        -- Validate name
         if not playerName or playerName == "" or #playerName < 3 then
             playerName = "Unknown"
         end
 
+        -- Create player details
         local playerDetails = {
             Name = playerName,
             cause = (player.attributes and table.concat(player.attributes, ", ")) or "Known Cheater",
-            date = player.last_seen and os.date("%Y-%m-%d %H:%M:%S", player.last_seen.time) or
-                os.date("%Y-%m-%d %H:%M:%S")
+            date = player.last_seen and os.date("%Y-%m-%d %H:%M:%S", player.last_seen.time) or os.date("%Y-%m-%d %H:%M:%S")
         }
 
-        -- Safely convert steamID to steamID64
+        -- Convert steamID to steamID64
         local success, id = pcall(function()
             if player.steamid:match("^%[U:1:%d+%]$") then
                 return steam.ToSteamID64(player.steamid)
@@ -126,7 +121,7 @@ function Database_Import.processImportedData(data, Database)
         steamID64 = success and id or nil
 
         if steamID64 then
-            Database_Import.updateDatabase(steamID64, playerDetails, Database) -- Pass Database parameter
+            Database_Import.updateDatabase(steamID64, playerDetails, Database)
         end
 
         ::continue::
@@ -135,67 +130,35 @@ end
 
 -- Safe file reading
 function Database_Import.readFromFile(filePath)
-    local success, fileOrErr = pcall(io.open, filePath, "r")
-    if not success or not fileOrErr then
-        return nil
-    end
-
-    local content
-    success, content = pcall(function()
-        local data = fileOrErr:read("*a")
-        fileOrErr:close()
-        return data
-    end)
-
-    if not success then
-        pcall(function() fileOrErr:close() end) -- Try to close if error occurred
-        return nil
-    end
-
+    local file = io.open(filePath, "r")
+    if not file then return nil end
+    
+    local content = file:read("*a")
+    file:close()
     return content
 end
 
--- Import database function - enhanced to properly use passed Database object
+-- Import database function
 function Database_Import.importDatabase(Database)
-    -- Validate input
-    if not Database then
-        print("Error: No database object provided to importDatabase")
-        return
-    end
-
-    -- Ensure content exists
+    if not Database then return end
+    
     Database.content = Database.content or {}
-
-    local baseFilePath = GetFilePath():gsub("database.json", "") -- Get base path
+    
+    local baseFilePath = GetFilePath():gsub("database.json", "")
     local importPath = baseFilePath .. "/import/"
-
-    -- Ensure import directory exists
-    local _, dirPath = pcall(filesystem.CreateDirectory, importPath)
-
-    -- Statistics
-    local totalFiles = 0
-    local successFiles = 0
-    local failedFiles = 0
-
-    print("[Database Import] Starting import from: " .. importPath)
-
-    -- Process all files in the import directory
+    
+    -- Create import directory if it doesn't exist
+    filesystem.CreateDirectory(importPath)
+    
+    -- Process all files
     filesystem.EnumerateDirectory(importPath .. "*", function(filename, attributes)
-        if filename == "." or filename == ".." then
-            return -- Skip directory entries
-        end
-
-        totalFiles = totalFiles + 1
+        if filename == "." or filename == ".." then return end
+        
         local fullPath = importPath .. filename
         local content = Database_Import.readFromFile(fullPath)
-
+        
         if content then
-            local before = 0
-            for _ in pairs(Database.content) do
-                before = before + 1
-            end
-
-            local success = pcall(function()
+            pcall(function()
                 if Common.isJson(content) then
                     local data = Json.decode(content)
                     if data then
@@ -205,30 +168,10 @@ function Database_Import.importDatabase(Database)
                     Database_Import.processRawIDs(content, Database)
                 end
             end)
-
-            local after = 0
-            for _ in pairs(Database.content) do
-                after = after + 1
-            end
-
-            if success then
-                successFiles = successFiles + 1
-                print(string.format("[Database Import] Processed %s: Added %d entries",
-                    filename, after - before))
-            else
-                failedFiles = failedFiles + 1
-                print("[Database Import] Failed to process: " .. filename)
-            end
-        else
-            failedFiles = failedFiles + 1
-            print("[Database Import] Failed to read: " .. filename)
         end
     end)
-
-    print(string.format("[Database Import] Complete. Processed %d files (%d successful, %d failed)",
-        totalFiles, successFiles, failedFiles))
-
-    return Database -- Return the updated database
+    
+    return Database
 end
 
 return Database_Import

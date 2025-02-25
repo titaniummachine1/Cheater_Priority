@@ -21,34 +21,33 @@ end
 function Database.SaveDatabase(DataBaseTable)
     DataBaseTable = DataBaseTable or Database.content
     local filepath = Database.GetFilePath()
+    
+    -- Open file for writing
+    local file = io.open(filepath, "w")
+    if not file then
+        print("[Database] Failed to open file for saving")
+        return false
+    end
 
-
-    local status, file = pcall(io.open, filepath, "w")
-    if status and file then
-        local uniqueDataBase = {}
-        -- Iterate over the database table
-        for steamId, data in pairs(DataBaseTable) do
-            -- If the record doesn't exist in the unique database, add it
-            if not uniqueDataBase[steamId] then
-                uniqueDataBase[steamId] = data
-            end
+    -- Prepare data
+    local uniqueDataBase = {}
+    for steamId, data in pairs(DataBaseTable) do
+        -- Skip any entries that aren't valid
+        if type(steamId) == "string" and type(data) == "table" then
+            uniqueDataBase[steamId] = data
         end
+    end
 
-        -- Serialize the unique database to JSON
-        local serializedDatabase = Json.encode(uniqueDataBase)
-        if not serializedDatabase then
-            print("Failed encoding database.")
-            file:close()
-            return
-        end
-
-        -- Write the serialized database to the file
+    -- Encode and save
+    local serializedDatabase = Json.encode(uniqueDataBase)
+    if serializedDatabase then
         file:write(serializedDatabase)
         file:close()
-
-        printc(255, 183, 0, 255, "[" .. os.date("%H:%M:%S") .. "] Saved Database to " .. tostring(filepath))
+        return true
     else
-        print("Failed to open file for saving. Error: " .. tostring(file))
+        file:close()
+        print("[Database] Failed to encode database")
+        return false
     end
 end
 
@@ -81,23 +80,24 @@ function Database.GetRecord(steamId)
     return Database.content[steamId]
 end
 
--- Also modify the accessor methods to provide safe defaults and type checking
 function Database.GetStrikes(steamId)
     if not steamId or not Database.content[steamId] then
-        return 0 -- Safe default
+        return 0
     end
     return tonumber(Database.content[steamId].strikes) or 0
 end
 
--- Also modify the accessor methods to provide safe defaults and type checking
 function Database.GetProof(steamId)
     if not steamId or not Database.content[steamId] then
-        return "Unknown" -- Safe default
+        return "Unknown"
     end
     return Database.content[steamId].proof or "Unknown"
 end
 
 function Database.GetDate(steamId)
+    if not steamId or not Database.content[steamId] then
+        return os.date("%Y-%m-%d %H:%M:%S")
+    end
     return Database.content[steamId].date
 end
 
@@ -111,25 +111,27 @@ function Database.ClearSuspect(steamId)
     end
 end
 
-local function OnUnload() -- Called when the script is unloaded
+-- Save when unloaded
+local function OnUnload()
     if Database.content then
-        if G.Menu.Main.debug then
-            Database.ClearSuspect(Common.GetSteamID64(entities.GetLocalPlayer())) -- Clear the local if debug is enabled
+        if G.Menu and G.Menu.Main and G.Menu.Main.debug then
+            local localPlayer = entities.GetLocalPlayer()
+            if localPlayer then
+                Database.ClearSuspect(Common.GetSteamID64(localPlayer))
+            end
         end
-
-        Database.SaveDatabase(Database.content) -- Save the database
-    else
-        Database.SaveDatabase()
+        
+        Database.SaveDatabase(Database.content)
     end
 end
 
---ImprotLocal databasees
-Database_import.importDatabase(Database)
+-- Initialize
+Database.LoadDatabase() -- Load existing database first
+Database_import.importDatabase(Database) -- Import additional data
+Database.SaveDatabase() -- Save combined database
 
---[[ Unregister previous callbacks ]]                       --
-callbacks.Unregister("Unload", "CDDatabase_Unload")         -- unregister the "Unload" callback
---[[ Register callbacks ]]                                  --
-callbacks.Register("Unload", "CDDatabase_Unload", OnUnload) -- Register the "Unload" callback
-
+-- Register unload callback
+callbacks.Unregister("Unload", "CDDatabase_Unload")
+callbacks.Register("Unload", "CDDatabase_Unload", OnUnload)
 
 return Database
