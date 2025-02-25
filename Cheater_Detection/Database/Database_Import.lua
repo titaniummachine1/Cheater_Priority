@@ -23,9 +23,9 @@ end
 function Database_Import.updateDatabase(steamID64, playerData, Database)
     -- Basic validation
     if not steamID64 or not playerData or not Database then return end
-    
+
     Database.content = Database.content or {}
-    
+
     local existingData = Database.content[steamID64]
     if existingData then
         -- Only update fields if they are not nil
@@ -41,7 +41,7 @@ function Database_Import.updateDatabase(steamID64, playerData, Database)
     else
         -- Mark as cheater in playerlist
         playerlist.SetPriority(steamID64, 10)
-        
+
         -- Add new entry
         Database.content[steamID64] = {
             Name = playerData.Name or "Unknown",
@@ -54,7 +54,7 @@ end
 -- Process raw ID data
 function Database_Import.processRawIDs(content, Database)
     if not content or not Database then return end
-    
+
     local date = os.date("%Y-%m-%d %H:%M:%S")
     for line in content:gmatch("[^\r\n]+") do
         line = trim(line)
@@ -93,7 +93,7 @@ function Database_Import.processImportedData(data, Database)
 
         local steamID64
         local playerName = player.last_seen and player.last_seen.player_name or "Unknown"
-        
+
         -- Validate name
         if not playerName or playerName == "" or #playerName < 3 then
             playerName = "Unknown"
@@ -103,7 +103,8 @@ function Database_Import.processImportedData(data, Database)
         local playerDetails = {
             Name = playerName,
             cause = (player.attributes and table.concat(player.attributes, ", ")) or "Known Cheater",
-            date = player.last_seen and os.date("%Y-%m-%d %H:%M:%S", player.last_seen.time) or os.date("%Y-%m-%d %H:%M:%S")
+            date = player.last_seen and os.date("%Y-%m-%d %H:%M:%S", player.last_seen.time) or
+            os.date("%Y-%m-%d %H:%M:%S")
         }
 
         -- Convert steamID to steamID64
@@ -132,34 +133,103 @@ end
 function Database_Import.readFromFile(filePath)
     local file = io.open(filePath, "r")
     if not file then return nil end
-    
+
     local content = file:read("*a")
     file:close()
     return content
 end
 
+-- Add this new function to process playerlist priority files
+function Database_Import.processPriorityList(content, Database)
+    if not content or not Database then return end
+    
+    local priorityMap = {
+        [4] = "Bot",
+        [5] = "Suspicious",
+        [6] = "Watched",
+        [7] = "Pazer List",
+        [8] = "Tacobot",
+        [9] = "MCDB",
+        [10] = "Cheater"
+    }
+    
+    -- Match both formats: playerlist.SetPriority("STEAMID", priority) and playerlist.SetPriority(steamid, priority)
+    local pattern = 'playerlist%.SetPriority%(["\']?([^"\',)]+)["\']?%s*,%s*(%d+)%)'
+    local date = os.date("%Y-%m-%d %H:%M:%S")
+    local count = 0
+    
+    for steamid, priority in content:gmatch(pattern) do
+        local priority = tonumber(priority)
+        if steamid and priority then
+            -- Convert steamid to steamid64 if needed
+            local steamID64
+            local success, result = pcall(function()
+                if steamid:match("^%d+$") and #steamid >= 15 then
+                    return steamid -- Already SteamID64
+                elseif steamid:match("^STEAM_0:%d:%d+$") then
+                    return steam.ToSteamID64(steamid)
+                elseif steamid:match("^%[U:1:%d+%]$") then
+                    return steam.ToSteamID64(steamid)
+                end
+                return nil
+            end)
+            
+            steamID64 = success and result or nil
+            
+            if steamID64 then
+                local cause = priorityMap[priority] or ("Priority " .. priority)
+                
+                Database_Import.updateDatabase(steamID64, {
+                    Name = "Unknown",
+                    cause = cause,
+                    date = date,
+                    priority = priority
+                }, Database)
+                
+                count = count + 1
+            end
+        end
+    end
+    
+    return count
+end
+
 -- Import database function
 function Database_Import.importDatabase(Database)
     if not Database then return end
-    
+
     Database.content = Database.content or {}
-    
+
     local baseFilePath = GetFilePath():gsub("database.json", "")
     local importPath = baseFilePath .. "/import/"
-    
+
     -- Create import directory if it doesn't exist
     filesystem.CreateDirectory(importPath)
-    
+
+    -- Track import statistics
+    local processedFiles = 0
+    local importedEntries = 0
+
     -- Process all files
     filesystem.EnumerateDirectory(importPath .. "*", function(filename, attributes)
         if filename == "." or filename == ".." then return end
-        
+
         local fullPath = importPath .. filename
         local content = Database_Import.readFromFile(fullPath)
-        
+
         if content then
-            pcall(function()
-                if Common.isJson(content) then
+            -- Count entries before import
+            local beforeCount = 0
+            for _ in pairs(Database.content) do
+                beforeCount = beforeCount + 1
+            end
+
+            -- Process the file
+            local success = pcall(function()
+                if content:match("playerlist%.SetPriority") then
+                    -- Process as a priority list file
+                    Database_Import.processPriorityList(content, Database)
+                elseif Common.isJson(content) then
                     local data = Json.decode(content)
                     if data then
                         Database_Import.processImportedData(data, Database)
@@ -168,9 +238,26 @@ function Database_Import.importDatabase(Database)
                     Database_Import.processRawIDs(content, Database)
                 end
             end)
+
+            if success then
+                processedFiles = processedFiles + 1
+
+                -- Count entries after import
+                local afterCount = 0
+                for _ in pairs(Database.content) do
+                    afterCount = afterCount + 1
+                end
+
+                importedEntries = importedEntries + (afterCount - beforeCount)
+            end
         end
     end)
-    
+
+    if processedFiles > 0 then
+        -- Only print a message if we actually processed files - the main Database.lua will print a summary
+        -- print(string.format("Processed %d import files with %d total entries", processedFiles, importedEntries))
+    end
+
     return Database
 end
 

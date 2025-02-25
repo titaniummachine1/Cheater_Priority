@@ -51,7 +51,8 @@ function Database.SaveDatabase(DataBaseTable)
     end
 end
 
-function Database.LoadDatabase()
+-- Modify the loadDatabase function to accept a 'silent' parameter
+function Database.LoadDatabase(silent)
     local filepath = Database.GetFilePath()
     local file, err = io.open(filepath, "r")
 
@@ -62,17 +63,24 @@ function Database.LoadDatabase()
         local loadedDatabase, pos, decodeErr = Json.decode(content, 1)
 
         if decodeErr then
-            print("Error loading database:", decodeErr)
+            if not silent then
+                print("Error loading database:", decodeErr)
+            end
             Database.content = {}
-            Database.SaveDatabase()
+            return false
         else
-            printc(0, 255, 140, 255, "[" .. os.date("%H:%M:%S") .. "] Loaded Database from " .. tostring(filepath))
+            if not silent then
+                printc(0, 255, 140, 255, "[" .. os.date("%H:%M:%S") .. "] Loaded Database from " .. tostring(filepath))
+            end
             Database.content = loadedDatabase or {}
+            return true
         end
     else
-        print("Failed to load database. Error: " .. tostring(err))
+        if not silent then
+            print("Failed to load database. Error: " .. tostring(err))
+        end
         Database.content = {}
-        Database.SaveDatabase()
+        return false
     end
 end
 
@@ -125,10 +133,42 @@ local function OnUnload()
     end
 end
 
--- Initialize
-Database.LoadDatabase() -- Load existing database first
-Database_import.importDatabase(Database) -- Import additional data
-Database.SaveDatabase() -- Save combined database
+-- Replace the initialization sequence at the bottom of the file with this:
+local function InitializeDatabase()
+    -- Load the existing database first
+    local loadSuccess = Database.LoadDatabase()
+    
+    -- Track entry count before import
+    local beforeCount = 0
+    for _ in pairs(Database.content) do
+        beforeCount = beforeCount + 1
+    end
+    
+    -- Import additional data
+    local importResult = Database_import.importDatabase(Database)
+    
+    -- Count entries after import
+    local afterCount = 0
+    for _ in pairs(Database.content) do
+        afterCount = afterCount + 1
+    end
+    
+    -- Show a summary of the import
+    local newEntries = afterCount - beforeCount
+    if newEntries > 0 then
+        printc(255, 255, 0, 255, string.format("[Database] Imported %d new entries from external sources", newEntries))
+    end
+    
+    -- Save combined database only if we have entries or imports
+    if afterCount > 0 then
+        if Database.SaveDatabase() then
+            printc(100, 255, 100, 255, string.format("[Database] Saved database with %d total entries", afterCount))
+        end
+    end
+end
+
+-- Initialize the database system
+InitializeDatabase()
 
 -- Register unload callback
 callbacks.Unregister("Unload", "CDDatabase_Unload")
