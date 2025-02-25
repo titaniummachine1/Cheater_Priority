@@ -3,10 +3,35 @@ local Common = require("Cheater_Detection.Utils.Common")
 local G = require("Cheater_Detection.Utils.Globals")
 local Database_import = require("Cheater_Detection.Database.Database_Import")
 local Database_Fetcher = require("Cheater_Detection.Database.Database_Fetcher")
+local ChunkedDB = require("Cheater_Detection.Database.ChunkedDB")
 
 local Database = {}
 
-Database.content = {}
+-- Configure ChunkedDB for our needs
+ChunkedDB.Config.ChunkSize = 2000       -- 2000 entries per chunk
+ChunkedDB.Config.AutoSave = true        -- Auto-save when database changes
+ChunkedDB.Config.UseWeakReferences = true -- Use weak references to save memory
+ChunkedDB.Config.DebugMode = false      -- Disable debug output
+
+-- Use ChunkedDB for storage to avoid CUTIRBTree overflow
+Database.content = setmetatable({}, {
+    __index = function(_, key)
+        return ChunkedDB.Get(key)
+    end,
+    
+    __newindex = function(_, key, value)
+        if value == nil then
+            ChunkedDB.Remove(key)
+        else
+            ChunkedDB.Set(key, value)
+        end
+    end,
+    
+    __pairs = function()
+        -- Create an iterator for use with pairs()
+        return ChunkedDB.Iterate()
+    end
+})
 
 local Json = Common.Json
 
@@ -16,105 +41,65 @@ local folder_name = string.format([[Lua %s]], Lua__fileName)
 
 function Database.GetFilePath()
     local success, fullPath = filesystem.CreateDirectory(folder_name)
-    return tostring(fullPath .. "/database.json")
+    return tostring(fullPath)
 end
 
 function Database.SaveDatabase(DataBaseTable)
-    DataBaseTable = DataBaseTable or Database.content
+    -- Instead of saving a single file, use ChunkedDB's save function
     local filepath = Database.GetFilePath()
-
-    -- Open file for writing
-    local file = io.open(filepath, "w")
-    if not file then
-        print("[Database] Failed to open file for saving")
-        return false
-    end
-
-    -- Prepare data
-    local uniqueDataBase = {}
-    for steamId, data in pairs(DataBaseTable) do
-        -- Skip any entries that aren't valid
-        if type(steamId) == "string" and type(data) == "table" then
-            uniqueDataBase[steamId] = data
-        end
-    end
-
-    -- Encode and save
-    local serializedDatabase = Json.encode(uniqueDataBase)
-    if serializedDatabase then
-        file:write(serializedDatabase)
-        file:close()
-        return true
-    else
-        file:close()
-        print("[Database] Failed to encode database")
-        return false
-    end
+    return ChunkedDB.SaveDatabase(filepath)
 end
 
--- Modify the loadDatabase function to accept a 'silent' parameter
+-- Modify the loadDatabase function to use ChunkedDB
 function Database.LoadDatabase(silent)
     local filepath = Database.GetFilePath()
-    local file, err = io.open(filepath, "r")
-
-    if file then
-        local content = file:read("*a")
-        file:close()
-
-        local loadedDatabase, pos, decodeErr = Json.decode(content, 1)
-
-        if decodeErr then
-            if not silent then
-                print("Error loading database:", decodeErr)
-            end
-            Database.content = {}
-            return false
-        else
-            if not silent then
-                printc(0, 255, 140, 255, "[" .. os.date("%H:%M:%S") .. "] Loaded Database from " .. tostring(filepath))
-            end
-            Database.content = loadedDatabase or {}
-            return true
+    local success = ChunkedDB.LoadDatabase(filepath)
+    
+    if success then
+        if not silent then
+            local stats = ChunkedDB.GetStats()
+            printc(0, 255, 140, 255, "[" .. os.date("%H:%M:%S") .. "] Loaded Database with " .. 
+                stats.totalEntries .. " entries across " .. stats.chunks .. " chunks")
         end
+        return true
     else
         if not silent then
-            print("Failed to load database. Error: " .. tostring(err))
+            print("Failed to load database.")
         end
-        Database.content = {}
         return false
     end
 end
 
 function Database.GetRecord(steamId)
-    return Database.content[steamId]
+    return ChunkedDB.Get(steamId)
 end
 
 function Database.GetStrikes(steamId)
-    if not steamId or not Database.content[steamId] then
-        return 0
-    end
-    return tonumber(Database.content[steamId].strikes) or 0
+    if not steamId then return 0 end
+    
+    local record = ChunkedDB.Get(steamId)
+    return record and (tonumber(record.strikes) or 0) or 0
 end
 
 function Database.GetProof(steamId)
-    if not steamId or not Database.content[steamId] then
-        return "Unknown"
-    end
-    return Database.content[steamId].proof or "Unknown"
+    if not steamId then return "Unknown" end
+    
+    local record = ChunkedDB.Get(steamId)
+    return record and (record.proof or "Unknown") or "Unknown"
 end
 
 function Database.GetDate(steamId)
-    if not steamId or not Database.content[steamId] then
-        return os.date("%Y-%m-%d %H:%M:%S")
-    end
-    return Database.content[steamId].date
+    if not steamId then return os.date("%Y-%m-%d %H:%M:%S") end
+    
+    local record = ChunkedDB.Get(steamId)
+    return record and record.date or os.date("%Y-%m-%d %H:%M:%S")
 end
 
 function Database.SetSuspect(steamId, data)
     if not steamId or not data then return end
-
-    Database.content[steamId] = data
-
+    
+    ChunkedDB.Set(steamId, data)
+    
     -- Also set priority in playerlist
     if data.priority then
         playerlist.SetPriority(steamId, data.priority)
@@ -125,8 +110,8 @@ function Database.SetSuspect(steamId, data)
 end
 
 function Database.ClearSuspect(steamId)
-    if Database.content[steamId] then
-        Database.content[steamId] = nil
+    if ChunkedDB.Contains(steamId) then
+        ChunkedDB.Remove(steamId)
         -- Also reset priority in playerlist if desired
         playerlist.SetPriority(steamId, 0)
     end
@@ -134,16 +119,14 @@ end
 
 -- Save when unloaded
 local function OnUnload()
-    if Database.content then
-        if G.Menu and G.Menu.Main and G.Menu.Main.debug then
-            local localPlayer = entities.GetLocalPlayer()
-            if localPlayer then
-                Database.ClearSuspect(Common.GetSteamID64(localPlayer))
-            end
+    if G.Menu and G.Menu.Main and G.Menu.Main.debug then
+        local localPlayer = entities.GetLocalPlayer()
+        if localPlayer then
+            Database.ClearSuspect(Common.GetSteamID64(localPlayer))
         end
-
-        Database.SaveDatabase(Database.content)
     end
+    
+    Database.SaveDatabase()
 end
 
 -- Initialize the database
@@ -152,19 +135,13 @@ local function InitializeDatabase()
     local loadSuccess = Database.LoadDatabase()
     
     -- Track entry count before import
-    local beforeCount = 0
-    for _ in pairs(Database.content) do
-        beforeCount = beforeCount + 1
-    end
+    local beforeCount = ChunkedDB.Count()
     
     -- Import additional data
     Database_import.importDatabase(Database)
     
     -- Count entries after import
-    local afterCount = 0
-    for _ in pairs(Database.content) do
-        afterCount = afterCount + 1
-    end
+    local afterCount = ChunkedDB.Count()
     
     -- Show a summary of the import
     local newEntries = afterCount - beforeCount
@@ -177,6 +154,15 @@ local function InitializeDatabase()
         if Database.SaveDatabase() then
             printc(100, 255, 100, 255, string.format("[Database] Saved database with %d total entries", afterCount))
         end
+    end
+    
+    -- Inform about chunking if database is large
+    if afterCount > 5000 then
+        local stats = ChunkedDB.GetStats()
+        printc(255, 200, 0, 255, string.format(
+            "[Database] Large database detected! Using %d chunks to prevent RBTree overflow", 
+            stats.chunks
+        ))
     end
     
     -- Check if Database_Fetcher is available and has auto-fetch enabled
@@ -212,6 +198,25 @@ end
 -- Auto update function that can be called from anywhere
 function Database.AutoUpdate()
     return Database.FetchUpdates(true)
+end
+
+-- Get stats about the database
+function Database.GetStats()
+    local stats = ChunkedDB.GetStats()
+    local causeStats = {}
+    
+    -- Count entries by cause
+    for k, v in ChunkedDB.Iterate() do
+        local cause = v.cause or "Unknown"
+        causeStats[cause] = (causeStats[cause] or 0) + 1
+    end
+    
+    return {
+        totalEntries = stats.totalEntries,
+        chunks = stats.chunks,
+        causeBreakdown = causeStats,
+        lastSave = stats.lastSave
+    }
 end
 
 -- Register unload callback

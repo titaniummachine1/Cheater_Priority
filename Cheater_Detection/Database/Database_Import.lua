@@ -24,9 +24,7 @@ function Database_Import.updateDatabase(steamID64, playerData, Database)
     -- Basic validation
     if not steamID64 or not playerData or not Database then return end
 
-    Database.content = Database.content or {}
-
-    local existingData = Database.content[steamID64]
+    local existingData = Database.GetRecord(steamID64)
     if existingData then
         -- Only update fields if they are not nil
         if playerData.Name and playerData.Name ~= "Unknown" then
@@ -38,16 +36,19 @@ function Database_Import.updateDatabase(steamID64, playerData, Database)
         if playerData.date then
             existingData.date = playerData.date
         end
+        
+        -- Update the record using SetSuspect
+        Database.SetSuspect(steamID64, existingData)
     else
         -- Mark as cheater in playerlist
         playerlist.SetPriority(steamID64, 10)
 
-        -- Add new entry
-        Database.content[steamID64] = {
+        -- Add new entry with SetSuspect
+        Database.SetSuspect(steamID64, {
             Name = playerData.Name or "Unknown",
             cause = playerData.cause or "Known Cheater",
             date = playerData.date or os.date("%Y-%m-%d %H:%M:%S")
-        }
+        })
     end
 end
 

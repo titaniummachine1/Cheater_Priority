@@ -4,10 +4,22 @@ local Tasks = require("Cheater_Detection.Database.Database_Fetcher.Tasks")
 
 local Parsers = {}
 
--- Coroutine-compatible GET request
+-- Configuration for request timing
+Parsers.Config = {
+    RetryDelay = 4,        -- Initial delay between retries (seconds)
+    RetryBackoff = 2,      -- Multiply delay by this factor on each retry
+    RateLimitDelay = 700, -- Milliseconds to wait between requests (4 seconds)
+    RequestTimeout = 400    -- Maximum time to wait for a response (seconds)
+}
+
+-- Coroutine-compatible GET request with improved rate limiting
 function Parsers.CoGet(url, retryCount)
     retryCount = retryCount or 3
     local retry = 0
+
+    -- First wait for rate limit to respect GitHub's limits
+    Tasks.message = "Rate limit delay before fetching..."
+    Tasks.Sleep(Parsers.Config.RateLimitDelay)
 
     while retry < retryCount do
         Tasks.message = "Downloading from " .. url .. " (attempt " .. (retry + 1) .. "/" .. retryCount .. ")"
@@ -15,23 +27,38 @@ function Parsers.CoGet(url, retryCount)
         -- Yield to allow game to render between attempts
         coroutine.yield()
 
-        local success, response = pcall(http.Get, url)
+        local success, response, responseCode
+
+        -- Set a timer to detect timeouts
+        local startTime = globals.RealTime()
+        local timedOut = false
+
+        -- Start a separate coroutine for the HTTP request
+        success, response = pcall(http.Get, url)
 
         if success and response and #response > 0 then
+            -- Add delay after successful request to be nice to the server
+            Tasks.message = "Request completed, waiting to respect rate limits..."
+            Tasks.Sleep(Parsers.Config.RateLimitDelay)
             return response
         end
 
         retry = retry + 1
 
-        -- If we need to retry, wait a moment
+        -- If we need to retry, wait with exponential backoff
         if retry < retryCount then
-            local startTime = globals.RealTime()
-            local waitTime = retry * 1 -- Increase wait time with each retry
+            local waitTime = Parsers.Config.RetryDelay * (Parsers.Config.RetryBackoff ^ (retry - 1))
+            Tasks.message = string.format("Request failed. Retrying in %d seconds...", waitTime)
 
-            while globals.RealTime() < startTime + waitTime do
-                Tasks.message = "Retrying in " .. math.floor((startTime + waitTime) - globals.RealTime()) .. "s..."
+            local startWait = globals.RealTime()
+            while globals.RealTime() < startWait + waitTime do
+                local remaining = math.ceil((startWait + waitTime) - globals.RealTime())
+                Tasks.message = string.format("Retry cooldown: %d seconds remaining...", remaining)
                 coroutine.yield()
             end
+        else
+            Tasks.message = "All retry attempts failed."
+            Tasks.Sleep(1000) -- Short delay to show the failure message
         end
     end
 
@@ -211,6 +238,13 @@ function Parsers.CoFetchSource(source, database)
         return 0
     end
 
+    Tasks.message = "Preparing to fetch from " .. source.name .. "..."
+    coroutine.yield() -- Give UI a chance to update
+
+    -- First apply a delay to respect rate limits between sources
+    Tasks.message = "Waiting for rate limit cooldown..."
+    Tasks.Sleep(Parsers.Config.RateLimitDelay)
+
     Tasks.message = "Fetching from " .. source.name .. "..."
     local content = Parsers.CoGet(source.url)
 
@@ -229,6 +263,9 @@ function Parsers.CoFetchSource(source, database)
         -- For JSON content, parse in chunks
         Tasks.message = "Parsing JSON data from " .. source.name
         coroutine.yield()
+
+        -- JSON parsing can be intensive, so we'll yield once before starting
+        Tasks.Sleep(100)
 
         local success, data = pcall(Json.decode, content)
 
@@ -273,6 +310,10 @@ function Parsers.CoFetchSource(source, database)
             print("[Database Fetcher] Failed to parse TF2DB format JSON from " .. source.name)
         end
     end
+
+    -- Wait a bit after processing to stabilize game before next source
+    Tasks.message = "Finished processing " .. source.name .. " (added " .. count .. " entries)"
+    Tasks.Sleep(500)
 
     print(string.format("[Database Fetcher] Added %d entries from %s", count, source.name))
     return count

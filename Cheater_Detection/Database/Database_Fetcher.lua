@@ -23,7 +23,9 @@ Fetcher.Config = {
     NotifyOnFetchComplete = true,      -- Show notifications when fetch completes
     ShowProgressBar = true,            -- Show the progress bar during fetch
     AutoFetchInterval = 0,             -- Time in minutes between auto-fetches (0 = disabled)
-    LastAutoFetch = 0                  -- Timestamp of last auto-fetch
+    LastAutoFetch = 0,                 -- Timestamp of last auto-fetch
+    RateLimitMode = "conservative",    -- Rate limit mode: "normal", "conservative", or "aggressive"
+    MaxConcurrentRequests = 1          -- Maximum number of concurrent requests (always 1 for now)
 }
 
 -- Export needed components
@@ -40,6 +42,29 @@ function Fetcher.FetchSource(source, database)
 
     -- Use the Parsers module's synchronous functions
     return Parsers.FetchSource(source, database)
+end
+
+-- Set rate limiting configuration based on mode
+function Fetcher.ConfigureRateLimits()
+    local mode = Fetcher.Config.RateLimitMode
+    
+    -- Set parser configuration based on mode
+    if mode == "conservative" then
+        -- Very slow, but safe for strict rate limits
+        Parsers.Config.RateLimitDelay = 5000    -- 5 seconds between requests
+        Parsers.Config.RetryDelay = 10          -- 10 seconds initial retry delay
+        Parsers.Config.RetryBackoff = 2         -- Double delay each retry
+    elseif mode == "aggressive" then
+        -- Faster, but risky for rate limits
+        Parsers.Config.RateLimitDelay = 1500    -- 1.5 seconds between requests
+        Parsers.Config.RetryDelay = 3           -- 3 seconds initial retry delay
+        Parsers.Config.RetryBackoff = 1.5       -- 1.5x delay each retry
+    else -- "normal" (default)
+        -- Balanced approach
+        Parsers.Config.RateLimitDelay = 4000    -- 4 seconds between requests 
+        Parsers.Config.RetryDelay = 5           -- 5 seconds initial retry delay
+        Parsers.Config.RetryBackoff = 2         -- Double delay each retry
+    end
 end
 
 -- Main fetch all function that uses coroutines
@@ -70,6 +95,9 @@ function Fetcher.FetchAll(database, callback, silent)
     Tasks.smoothProgress = 0  -- Initialize smoothProgress for UI
 
     local totalAdded = 0
+
+    -- Configure rate limits before starting
+    Fetcher.ConfigureRateLimits()
 
     -- Add a task for each source
     for i, source in ipairs(Fetcher.Sources) do
@@ -281,6 +309,26 @@ local function RegisterCommands()
             print("[Database Fetcher] No active tasks to cancel")
         end
     end, "Cancel any ongoing database fetch operations")
+
+    -- Add a command to change rate limit mode
+    Commands.Register("cd_ratelimit", function(args)
+        if #args >= 1 then
+            local mode = args[1]:lower()
+            if mode == "conservative" or mode == "normal" or mode == "aggressive" then
+                Fetcher.Config.RateLimitMode = mode
+                print(string.format("[Database Fetcher] Rate limit mode set to: %s", mode))
+                Fetcher.ConfigureRateLimits()
+            else
+                print("Invalid mode. Valid options: conservative, normal, aggressive")
+            end
+        else
+            -- Show current mode
+            print(string.format("[Database Fetcher] Current rate limit mode: %s", Fetcher.Config.RateLimitMode))
+            print("  - conservative: Very slow, but safe for strict rate limits")
+            print("  - normal: Balanced approach (default)")
+            print("  - aggressive: Faster, but risky for rate limits")
+        end
+    end, "Set rate limit mode for database fetching (conservative, normal, aggressive)")
 end
 
 -- Draw callback to process tasks and render a stylish progress indicator
@@ -476,5 +524,8 @@ if Fetcher.Config.AutoFetchOnLoad then
         end)
     end)
 end
+
+-- Set initial rate limits on load
+Fetcher.ConfigureRateLimits()
 
 return Fetcher
