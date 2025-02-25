@@ -9,8 +9,8 @@ local function trim(s)
 end
 
 -- Enhance data update checking and handling
-function Database_import.updateDatabase(steamID64, playerData)
-    local existingData = G.DataBase[steamID64]
+function Database_import.updateDatabase(steamID64, playerData, Database)
+    local existingData = Database.content[steamID64]
     if existingData then
         -- Only update fields if they are not nil
         if playerData.Name and playerData.Name ~= "Unknown" then
@@ -24,12 +24,14 @@ function Database_import.updateDatabase(steamID64, playerData)
         end
     else
         playerlist.SetPriority(steamID64, 10)
-        G.DataBase[steamID64] = playerData
+        Database.content[steamID64] = playerData
     end
+
+    return Database
 end
 
 -- Function to process raw ID data, handling SteamID64 and SteamID formats
-function Database_import.processRawIDs(content)
+function Database_import.processRawIDs(content, Database)
     local date = os.date("%Y-%m-%d %H:%M:%S")
     for line in content:gmatch("[^\r\n]+") do
         line = trim(line)
@@ -47,14 +49,15 @@ function Database_import.processRawIDs(content)
                     Name = "Unknown",
                     proof = "Known Cheater",
                     date = date,
-                })
+                },
+                Database)
             end
         end
     end
 end
 
 -- Process each item in the imported data
-function Database_import.processImportedData(data)
+function Database_import.processImportedData(data, Database)
     if data and data.players then
         for _, player in ipairs(data.players) do
             local steamID64
@@ -80,7 +83,7 @@ function Database_import.processImportedData(data)
                 steamID64 = player.steamid  -- Already SteamID64
             end
 
-            Database_import.updateDatabase(steamID64, playerDetails)
+            Database_import.updateDatabase(steamID64, playerDetails, Database)
         end
     end
 end
@@ -97,7 +100,7 @@ function Database_import.readFromFile(filePath)
 end
 
 -- Import and process database files
-function Database_import.importDatabase()
+function Database_import.importDatabase(Database)
     local baseFilePath = Database_import.GetFilePath():gsub("database.json", "")  -- Ensure the correct base path
     local importPath = baseFilePath .. "/import/"
 
@@ -112,12 +115,12 @@ function Database_import.importDatabase()
             if Common.isJson(content) then
                 local data, err = Json.decode(content)
                 if data then
-                    Database_import.processImportedData(data)
+                    Database_import.processImportedData(data, Database)
                 else
                     print("Error decoding JSON from file:", err)
                 end
             else
-                Database_import.processRawIDs(content)
+                Database_import.processRawIDs(content, Database)
             end
         end
     end)
