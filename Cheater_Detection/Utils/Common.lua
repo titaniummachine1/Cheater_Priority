@@ -28,9 +28,9 @@ end
 
 -- Function to download content from a URL
 local function downloadFile(url)
-    local body = http.Get(url)
-    if not body or body == "" then
-        error("Failed to download file from " .. url)
+    local success, body = pcall(http.Get, url)
+    if not success or not body or body == "" then
+        error("Failed to download file from " .. url .. ": " .. tostring(body))
     end
     return body
 end
@@ -38,16 +38,50 @@ end
 -- Load and validate library
 local function loadlib(libName, libURL)
     if libName == "LNXlib" then
-        -- Download and load LNXlib
-        local libContent = downloadFile(libURL)
-        -- Execute directly and assign globally
-        lnxLib = assert(load(libContent))()
-
+        -- First try to load local LNXlib if it exists
+        local success, localLib = pcall(require, "lnxLib")
+        
+        if success and localLib then
+            -- Local version exists and loaded successfully
+            lnxLib = localLib
+            print("Loaded local lnxLib")
+        else
+            -- Local version doesn't exist, download from GitHub
+            print("Local lnxLib not found, downloading from GitHub...")
+            local libContent
+            
+            -- Try to download with error handling
+            local downloadSuccess, errorMsg = pcall(function()
+                libContent = downloadFile(libURL)
+                return true
+            end)
+            
+            if not downloadSuccess or not libContent then
+                error("Failed to download lnxLib: " .. tostring(errorMsg))
+            end
+            
+            -- Execute downloaded code with error handling
+            local executeSuccess, result = pcall(load, libContent)
+            if not executeSuccess or not result then
+                error("Failed to load lnxLib content: " .. tostring(result))
+            end
+            
+            -- Execute the loaded code
+            local runSuccess, lib = pcall(result)
+            if not runSuccess or not lib then
+                error("Failed to execute lnxLib: " .. tostring(lib))
+            end
+            
+            -- Assign globally
+            lnxLib = lib
+            print("Downloaded and loaded lnxLib from GitHub")
+        end
+        
         -- Allow require("lnxLib") to return global
         package.preload["lnxLib"] = function()
             return lnxLib
         end
-
+        
         return lnxLib
     else
         -- For ImMenu, load normally but modify its code first
