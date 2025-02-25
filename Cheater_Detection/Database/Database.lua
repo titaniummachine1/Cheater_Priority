@@ -10,7 +10,7 @@ local Database = {}
 -- Configure ChunkedDB for our needs
 ChunkedDB.Config.ChunkSize = 2000       -- 2000 entries per chunk
 ChunkedDB.Config.AutoSave = true        -- Auto-save when database changes
-ChunkedDB.Config.UseWeakReferences = true -- Use weak references to save memory
+ChunkedDB.Config.UseWeakReferences = false -- Disable weak references to improve reliability
 ChunkedDB.Config.DebugMode = false      -- Disable debug output
 
 -- Use ChunkedDB for storage to avoid CUTIRBTree overflow
@@ -36,12 +36,36 @@ Database.content = setmetatable({}, {
 local Json = Common.Json
 
 local Lua__fullPath = GetScriptName()
-local Lua__fileName = Lua__fullPath:match("\\([^\\]-)$"):gsub("%.lua$", "")
-local folder_name = string.format([[Lua %s]], Lua__fileName)
+local Lua__fileName = Lua__fullPath:match("([^/\\]+)%.lua$"):gsub("%.lua$", "")
+
+-- Try multiple possible folder names to improve compatibility
+local function GetFolderName()
+    local possibleFolders = {
+        string.format([[Lua %s]], Lua__fileName),
+        "Lua Cheater_Detection",
+        "Lua Scripts/Cheater_Detection",
+        "lbox/Cheater_Detection",
+        "lmaobox/Cheater_Detection"
+    }
+    
+    -- Try to find existing folder first
+    for _, folder in ipairs(possibleFolders) do
+        if pcall(function() return filesystem.GetFileSize(folder) end) then
+            return folder
+        end
+    end
+    
+    -- Fall back to the first option if none exist
+    return possibleFolders[1]
+end
+
+-- Updated folder name with more robust handling
+local folder_name = GetFolderName()
 
 function Database.GetFilePath()
-    local success, fullPath = filesystem.CreateDirectory(folder_name)
-    return tostring(fullPath)
+    -- Try to create directory, but don't fail if it doesn't work
+    pcall(filesystem.CreateDirectory, folder_name)
+    return tostring(folder_name)
 end
 
 function Database.SaveDatabase(DataBaseTable)
@@ -217,6 +241,25 @@ function Database.GetStats()
         causeBreakdown = causeStats,
         lastSave = stats.lastSave
     }
+end
+
+-- Add utility functions to manage duplicate entries
+function Database.MergeDuplicates()
+    local steamIDs = {}
+    local duplicates = 0
+    
+    -- First, collect all steamIDs
+    for steamID, _ in pairs(Database.content) do
+        table.insert(steamIDs, steamID)
+    end
+    
+    print(string.format("[Database] Processing %d entries for duplicates...", #steamIDs))
+    
+    -- Nothing more to do here since ChunkedDB already prevents duplicates by key
+    -- This is just a placeholder for possible future functionality
+    
+    print(string.format("[Database] Database is already optimized (0 duplicates removed)"))
+    return 0
 end
 
 -- Register unload callback

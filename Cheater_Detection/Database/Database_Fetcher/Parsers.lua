@@ -111,6 +111,7 @@ function Parsers.CoParseBatch(content, database, sourceName, sourceCause)
     local date = os.date("%Y-%m-%d %H:%M:%S")
     local count = 0
     local linesProcessed = 0
+    local duplicateSkipped = 0
     local LINES_PER_YIELD = 100 -- Process this many lines before yielding
 
     -- Parse raw ID list
@@ -130,21 +131,35 @@ function Parsers.CoParseBatch(content, database, sourceName, sourceCause)
                 local steamID64 = line
                 local existingData = database.content[steamID64]
 
+                -- Only add if not already in database with same cause
                 if not existingData then
-                    -- Only add if not already in database
+                    -- Entry doesn't exist at all, add it
                     database.content[steamID64] = {
                         Name = "Unknown",
                         cause = sourceCause,
                         date = date,
                         source = sourceName
                     }
-
-                    -- Flag player in playerlist
                     playerlist.SetPriority(steamID64, 10)
                     count = count + 1
+                elseif existingData.cause ~= sourceCause then
+                    -- Entry exists but has different cause, keep record but update fields
+                    -- We prioritize keeping the existing cause, but update other fields
+                    existingData.source = sourceName .. ", " .. (existingData.source or "")
+                    existingData.date = date -- Update to most recent date
+                    database.content[steamID64] = existingData
+                    duplicateSkipped = duplicateSkipped + 1
+                else
+                    -- Skip duplicates with same cause
+                    duplicateSkipped = duplicateSkipped + 1
                 end
             end
         end
+    end
+    
+    if duplicateSkipped > 0 then
+        print(string.format("[Database Fetcher] Skipped %d duplicate entries from %s", 
+            duplicateSkipped, sourceName))
     end
 
     return count
@@ -317,6 +332,27 @@ function Parsers.CoFetchSource(source, database)
 
     print(string.format("[Database Fetcher] Added %d entries from %s", count, source.name))
     return count
+end
+
+-- Add a simple function to update database paths in Lua system
+function Parsers.FixDatabasePaths()
+    local possiblePaths = {
+        "Lua Cheater_Detection",
+        "Lua Scripts/Cheater_Detection",
+        "lbox/Cheater_Detection",
+        "lmaobox/Cheater_Detection",
+        "."
+    }
+    
+    -- Check each path and try to create it
+    for _, path in ipairs(possiblePaths) do
+        if pcall(filesystem.CreateDirectory, path) then
+            print("[Database Fetcher] Successfully created directory: " .. path)
+            return path
+        end
+    end
+    
+    return nil
 end
 
 return Parsers

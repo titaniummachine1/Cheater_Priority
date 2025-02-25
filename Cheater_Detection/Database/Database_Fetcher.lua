@@ -18,14 +18,15 @@ local Fetcher = {}
 
 -- Configuration options
 Fetcher.Config = {
-    AutoFetchOnLoad = false,           -- Auto fetch when script loads
+    AutoFetchOnLoad = false,           -- Auto fetch when script loads (default off)
     AutoSaveAfterFetch = true,         -- Automatically save database after fetching
     NotifyOnFetchComplete = true,      -- Show notifications when fetch completes
     ShowProgressBar = true,            -- Show the progress bar during fetch
-    AutoFetchInterval = 0,             -- Time in minutes between auto-fetches (0 = disabled)
+    AutoFetchInterval = 10,            -- Time in minutes between auto-fetches (10 minutes)
     LastAutoFetch = 0,                 -- Timestamp of last auto-fetch
     RateLimitMode = "conservative",    -- Rate limit mode: "normal", "conservative", or "aggressive"
-    MaxConcurrentRequests = 1          -- Maximum number of concurrent requests (always 1 for now)
+    MaxConcurrentRequests = 1,         -- Maximum number of concurrent requests (always 1 for now)
+    PreventDuplicates = true           -- Prevent adding duplicate records
 }
 
 -- Export needed components
@@ -329,6 +330,41 @@ local function RegisterCommands()
             print("  - aggressive: Faster, but risky for rate limits")
         end
     end, "Set rate limit mode for database fetching (conservative, normal, aggressive)")
+    
+    -- Auto-fetch settings command
+    Commands.Register("cd_fetch_settings", function()
+        -- Display current fetch settings
+        print(string.format("[Database Fetcher] Auto-fetch on load: %s", 
+            Fetcher.Config.AutoFetchOnLoad and "ON" or "OFF"))
+        print(string.format("[Database Fetcher] Auto-save after fetch: %s", 
+            Fetcher.Config.AutoSaveAfterFetch and "ON" or "OFF"))
+        print(string.format("[Database Fetcher] Auto-fetch interval: %d minutes", 
+            Fetcher.Config.AutoFetchInterval))
+        print(string.format("[Database Fetcher] Rate limit mode: %s", 
+            Fetcher.Config.RateLimitMode))
+        
+        -- Show last fetch time if available
+        if Fetcher.Config.LastAutoFetch > 0 then
+            local timeSince = os.time() - Fetcher.Config.LastAutoFetch
+            local minutesSince = math.floor(timeSince / 60)
+            print(string.format("[Database Fetcher] Last fetch: %s (%d minutes ago)", 
+                os.date("%Y-%m-%d %H:%M:%S", Fetcher.Config.LastAutoFetch),
+                minutesSince))
+        else
+            print("[Database Fetcher] Last fetch: Never")
+        end
+        
+        -- Calculate next fetch time if auto-fetch is enabled
+        if Fetcher.Config.AutoFetchInterval > 0 then
+            local nextFetchTime = Fetcher.Config.LastAutoFetch + (Fetcher.Config.AutoFetchInterval * 60)
+            local timeUntil = nextFetchTime - os.time()
+            if timeUntil > 0 then
+                print(string.format("[Database Fetcher] Next auto-fetch in: %d minutes", math.ceil(timeUntil / 60)))
+            else
+                print("[Database Fetcher] Next auto-fetch: Due now")
+            end
+        end
+    end, "Show current database fetch settings")
 end
 
 -- Draw callback to process tasks and render a stylish progress indicator
