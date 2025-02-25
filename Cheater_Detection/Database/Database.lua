@@ -2,6 +2,7 @@
 local Common = require("Cheater_Detection.Utils.Common")
 local G = require("Cheater_Detection.Utils.Globals")
 local Database_import = require("Cheater_Detection.Database.Database_Import")
+local Database_Fetcher = require("Cheater_Detection.Database.Database_Fetcher")
 
 local Database = {}
 
@@ -110,12 +111,24 @@ function Database.GetDate(steamId)
 end
 
 function Database.SetSuspect(steamId, data)
+    if not steamId or not data then return end
+    
     Database.content[steamId] = data
+    
+    -- Also set priority in playerlist
+    if data.priority then
+        playerlist.SetPriority(steamId, data.priority)
+    else
+        -- Default to priority 10 for cheaters
+        playerlist.SetPriority(steamId, 10)
+    end
 end
 
 function Database.ClearSuspect(steamId)
     if Database.content[steamId] then
         Database.content[steamId] = nil
+        -- Also reset priority in playerlist if desired
+        playerlist.SetPriority(steamId, 0)
     end
 end
 
@@ -133,7 +146,7 @@ local function OnUnload()
     end
 end
 
--- Replace the initialization sequence at the bottom of the file with this:
+-- Initialize the database
 local function InitializeDatabase()
     -- Load the existing database first
     local loadSuccess = Database.LoadDatabase()
@@ -145,7 +158,7 @@ local function InitializeDatabase()
     end
     
     -- Import additional data
-    local importResult = Database_import.importDatabase(Database)
+    Database_import.importDatabase(Database)
     
     -- Count entries after import
     local afterCount = 0
@@ -167,11 +180,22 @@ local function InitializeDatabase()
     end
 end
 
--- Initialize the database system
-InitializeDatabase()
-
 -- Register unload callback
 callbacks.Unregister("Unload", "CDDatabase_Unload")
 callbacks.Register("Unload", "CDDatabase_Unload", OnUnload)
+
+-- Initialize the database when this module is loaded
+InitializeDatabase()
+
+-- Add database update command
+client.Command("cd_update_db", function()
+    local added = Database_Fetcher.FetchAll(Database)
+    if added > 0 then
+        Database.SaveDatabase()
+        print("[Database] Database updated with " .. added .. " new entries")
+    else
+        print("[Database] No new entries added")
+    end
+end, "Update the cheater database from online sources")
 
 return Database
