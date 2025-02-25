@@ -22,7 +22,7 @@ end
 function Database.SaveDatabase(DataBaseTable)
     DataBaseTable = DataBaseTable or Database.content
     local filepath = Database.GetFilePath()
-    
+
     -- Open file for writing
     local file = io.open(filepath, "w")
     if not file then
@@ -112,9 +112,9 @@ end
 
 function Database.SetSuspect(steamId, data)
     if not steamId or not data then return end
-    
+
     Database.content[steamId] = data
-    
+
     -- Also set priority in playerlist
     if data.priority then
         playerlist.SetPriority(steamId, data.priority)
@@ -141,7 +141,7 @@ local function OnUnload()
                 Database.ClearSuspect(Common.GetSteamID64(localPlayer))
             end
         end
-        
+
         Database.SaveDatabase(Database.content)
     end
 end
@@ -150,28 +150,28 @@ end
 local function InitializeDatabase()
     -- Load the existing database first
     local loadSuccess = Database.LoadDatabase()
-    
+
     -- Track entry count before import
     local beforeCount = 0
     for _ in pairs(Database.content) do
         beforeCount = beforeCount + 1
     end
-    
+
     -- Import additional data
     Database_import.importDatabase(Database)
-    
+
     -- Count entries after import
     local afterCount = 0
     for _ in pairs(Database.content) do
         afterCount = afterCount + 1
     end
-    
+
     -- Show a summary of the import
     local newEntries = afterCount - beforeCount
     if newEntries > 0 then
         printc(255, 255, 0, 255, string.format("[Database] Imported %d new entries from external sources", newEntries))
     end
-    
+
     -- Save combined database only if we have entries or imports
     if afterCount > 0 then
         if Database.SaveDatabase() then

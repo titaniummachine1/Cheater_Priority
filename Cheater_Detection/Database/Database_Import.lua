@@ -104,7 +104,7 @@ function Database_Import.processImportedData(data, Database)
             Name = playerName,
             cause = (player.attributes and table.concat(player.attributes, ", ")) or "Known Cheater",
             date = player.last_seen and os.date("%Y-%m-%d %H:%M:%S", player.last_seen.time) or
-            os.date("%Y-%m-%d %H:%M:%S")
+                os.date("%Y-%m-%d %H:%M:%S")
         }
 
         -- Convert steamID to steamID64
@@ -142,7 +142,7 @@ end
 -- Add this new function to process playerlist priority files
 function Database_Import.processPriorityList(content, Database)
     if not content or not Database then return end
-    
+
     local priorityMap = {
         [4] = "Bot",
         [5] = "Suspicious",
@@ -152,12 +152,12 @@ function Database_Import.processPriorityList(content, Database)
         [9] = "MCDB",
         [10] = "Cheater"
     }
-    
+
     -- Match both formats: playerlist.SetPriority("STEAMID", priority) and playerlist.SetPriority(steamid, priority)
     local pattern = 'playerlist%.SetPriority%(["\']?([^"\',)]+)["\']?%s*,%s*(%d+)%)'
     local date = os.date("%Y-%m-%d %H:%M:%S")
     local count = 0
-    
+
     for steamid, priority in content:gmatch(pattern) do
         local priority = tonumber(priority)
         if steamid and priority then
@@ -173,24 +173,24 @@ function Database_Import.processPriorityList(content, Database)
                 end
                 return nil
             end)
-            
+
             steamID64 = success and result or nil
-            
+
             if steamID64 then
                 local cause = priorityMap[priority] or ("Priority " .. priority)
-                
+
                 Database_Import.updateDatabase(steamID64, {
                     Name = "Unknown",
                     cause = cause,
                     date = date,
                     priority = priority
                 }, Database)
-                
+
                 count = count + 1
             end
         end
     end
-    
+
     return count
 end
 

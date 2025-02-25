@@ -226,13 +226,13 @@ local function OnDraw()
             local cornerRadius = 6
             -- Calculate pulsing effect and ensure it's an integer for draw calls
             local pulseValue = math.sin(globals.RealTime() * 4) * 0.2 + 0.8 -- Value between 0.6 and 1.0
-            local pulseFactor = math.floor(pulseValue * 100) / 100 -- Keep precision but without float errors
+            local pulseFactor = math.floor(pulseValue * 100) / 100          -- Keep precision but without float errors
 
             -- Calculate smooth progress (to avoid jumpy bar)
             local targetProgress = Tasks.progress / 100
             Tasks.smoothProgress = Tasks.smoothProgress or 0
             Tasks.smoothProgress = Tasks.smoothProgress + (targetProgress - Tasks.smoothProgress) * 0.1
-            
+
             -- Ensure all drawing coordinates are integers
             x, y = math.floor(x), math.floor(y)
             width, height = math.floor(width), math.floor(height)
@@ -265,7 +265,7 @@ local function OnDraw()
             local glowSize = 8
             local glowAlpha = math.floor(40 * pulseFactor)
             for i = 1, glowSize do
-                local alpha = math.floor(glowAlpha * (1 - i/glowSize))
+                local alpha = math.floor(glowAlpha * (1 - i / glowSize))
                 draw.Color(100, 150, 255, alpha)
                 draw.OutlinedRect(x - i, y - i, x + width + i, y + height + i)
             end
@@ -300,7 +300,7 @@ local function OnDraw()
             -- Truncate message if too long
             local msgWidth = draw.GetTextSize(message)
             msgWidth = math.floor(msgWidth)
-            
+
             if msgWidth > width - 2 * padding - 40 then
                 local truncated = message
                 while draw.GetTextSize(truncated .. "...") > width - 2 * padding - 40 do
