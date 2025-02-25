@@ -16,6 +16,16 @@ local Parsers = require("Cheater_Detection.Database.Database_Fetcher.Parsers")
 -- Create fetcher object
 local Fetcher = {}
 
+-- Configuration options
+Fetcher.Config = {
+    AutoFetchOnLoad = false,           -- Auto fetch when script loads
+    AutoSaveAfterFetch = true,         -- Automatically save database after fetching
+    NotifyOnFetchComplete = true,      -- Show notifications when fetch completes
+    ShowProgressBar = true,            -- Show the progress bar during fetch
+    AutoFetchInterval = 0,             -- Time in minutes between auto-fetches (0 = disabled)
+    LastAutoFetch = 0                  -- Timestamp of last auto-fetch
+}
+
 -- Export needed components
 Fetcher.Tasks = Tasks
 Fetcher.Sources = Sources.List
@@ -33,10 +43,12 @@ function Fetcher.FetchSource(source, database)
 end
 
 -- Main fetch all function that uses coroutines
-function Fetcher.FetchAll(database, callback)
+function Fetcher.FetchAll(database, callback, silent)
     -- If tasks are already running, don't start new ones
     if Tasks.isRunning then
-        print("[Database Fetcher] A fetch operation is already in progress")
+        if not silent then
+            print("[Database Fetcher] A fetch operation is already in progress")
+        end
         return false
     end
 
@@ -54,6 +66,8 @@ function Fetcher.FetchAll(database, callback)
     Tasks.status = "initializing"
     Tasks.progress = 0
     Tasks.message = "Preparing to fetch sources..."
+    Tasks.silent = silent or false
+    Tasks.smoothProgress = 0  -- Initialize smoothProgress for UI
 
     local totalAdded = 0
 
@@ -72,10 +86,48 @@ function Fetcher.FetchAll(database, callback)
         return totalAdded
     end, "Finalizing", 0.5)
 
-    print(string.format("[Database Fetcher] Queued %d sources for fetching", #Fetcher.Sources))
+    if not silent then
+        print(string.format("[Database Fetcher] Queued %d sources for fetching", #Fetcher.Sources))
+    end
 
     -- Return immediately, the tasks will run across frames
     return true
+end
+
+-- Auto-fetch handler - can be triggered on load or periodically
+function Fetcher.AutoFetch(database)
+    -- Set silent mode based on config
+    local silent = not Fetcher.Config.ShowProgressBar
+    
+    -- Get database reference if not provided
+    if not database then
+        local success, db = pcall(function()
+            return require("Cheater_Detection.Database.Database")
+        end)
+        
+        if not success or not db then
+            return false
+        end
+        
+        database = db
+    end
+    
+    -- Force Tasks.isRunning to false before starting a new fetch to reset any stuck state
+    Tasks.isRunning = false
+    
+    -- Start fetch with appropriate silent mode
+    return Fetcher.FetchAll(database, function(totalAdded)
+        if totalAdded > 0 and Fetcher.Config.AutoSaveAfterFetch then
+            database.SaveDatabase()
+            
+            if Fetcher.Config.NotifyOnFetchComplete then
+                printc(80, 200, 120, 255, "[Database] Auto-updated with " .. totalAdded .. " new entries")
+            end
+        end
+        
+        -- Update last fetch time
+        Fetcher.Config.LastAutoFetch = os.time()
+    end, silent)
 end
 
 -- Download list wrapper function
@@ -136,21 +188,43 @@ local function RegisterCommands()
             print("[Database Fetcher] A fetch operation is already in progress")
         end
     end, "Fetch all cheater lists and update the database")
-
-    -- Download list command
-    Commands.Register("cd_download_list", function(args)
-        -- Only start if not already running
-        if not Tasks.isRunning then
-            if #args < 2 then
-                print("Usage: cd_download_list <url> <filename>")
-                return
+    
+    -- Auto fetch toggle command
+    Commands.Register("cd_autofetch", function(args)
+        if #args >= 1 then
+            local mode = args[1]:lower()
+            if mode == "on" or mode == "1" or mode == "true" then
+                Fetcher.Config.AutoFetchOnLoad = true
+                print("[Database Fetcher] Auto-fetch on load: ENABLED")
+            elseif mode == "off" or mode == "0" or mode == "false" then
+                Fetcher.Config.AutoFetchOnLoad = false
+                print("[Database Fetcher] Auto-fetch on load: DISABLED")
             end
-
-            Fetcher.DownloadList(args[1], args[2])
         else
-            print("[Database Fetcher] A task is already in progress")
+            -- Toggle mode
+            Fetcher.Config.AutoFetchOnLoad = not Fetcher.Config.AutoFetchOnLoad
+            print("[Database Fetcher] Auto-fetch on load: " .. (Fetcher.Config.AutoFetchOnLoad and "ENABLED" or "DISABLED"))
         end
-    end, "Download a list from URL and save to import folder")
+    end, "Toggle auto-fetch on script load")
+    
+    -- Set update interval command
+    Commands.Register("cd_fetch_interval", function(args)
+        if #args >= 1 then
+            local minutes = tonumber(args[1])
+            if minutes and minutes >= 0 then
+                Fetcher.Config.AutoFetchInterval = minutes
+                if minutes == 0 then
+                    print("[Database Fetcher] Periodic auto-fetch: DISABLED")
+                else
+                    print(string.format("[Database Fetcher] Auto-fetch interval set to %d minutes", minutes))
+                end
+            else
+                print("[Database Fetcher] Invalid interval. Usage: cd_fetch_interval <minutes>")
+            end
+        else
+            print(string.format("[Database Fetcher] Current auto-fetch interval: %d minutes", Fetcher.Config.AutoFetchInterval))
+        end
+    end, "Set auto-fetch interval in minutes (0 to disable)")
 
     -- List all available sources command
     Commands.Register("cd_list_sources", function()
@@ -211,12 +285,18 @@ end
 
 -- Draw callback to process tasks and render a stylish progress indicator
 local function OnDraw()
-    -- Process a task each frame if we're running
+    -- Always process tasks if we're running, even if UI is disabled
     if Tasks.isRunning then
         Tasks.Process()
 
-        -- Draw progress indicator in the corner if not idle
-        if Tasks.status ~= "idle" then
+        -- Draw progress indicator if enabled and not in silent mode
+        if Fetcher.Config.ShowProgressBar and not Tasks.silent and Tasks.status ~= "idle" then
+            -- Debug - force visibility for testing
+            local debugMsg = "[DEBUG] Task active: " .. Tasks.message .. " (" .. Tasks.progress .. "%)"
+            draw.Color(255, 0, 0, 255)
+            draw.SetFont(draw.CreateFont("Arial", 12, 400))
+            draw.Text(10, 120, debugMsg)
+            
             -- Set up basic dimensions and styles
             local x, y = 15, 15
             local width = 260
@@ -357,13 +437,32 @@ local function OnDraw()
             end
         end
     end
+    
+    -- Check if we need to auto-fetch based on interval
+    if Fetcher.Config.AutoFetchInterval > 0 and not Tasks.isRunning then
+        local currentTime = os.time()
+        local nextFetchTime = Fetcher.Config.LastAutoFetch + (Fetcher.Config.AutoFetchInterval * 60)
+        
+        if currentTime >= nextFetchTime then
+            Fetcher.AutoFetch()
+        end
+    end
 end
 
--- Register callbacks
+-- Make sure we're the only one handling the Draw callback
 callbacks.Unregister("Draw", "CDFetcher")
 callbacks.Register("Draw", "CDFetcher", OnDraw)
 
 -- Register commands when the script is loaded
 RegisterCommands()
+
+-- Run auto-fetch if enabled - use callbacks.Run to ensure it happens immediately
+if Fetcher.Config.AutoFetchOnLoad then
+    callbacks.Run(function()
+        -- Set ShowProgressBar to true to make the loading window visible
+        Fetcher.Config.ShowProgressBar = true
+        Fetcher.AutoFetch()
+    end)
+end
 
 return Fetcher

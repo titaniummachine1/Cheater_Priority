@@ -150,34 +150,68 @@ end
 local function InitializeDatabase()
     -- Load the existing database first
     local loadSuccess = Database.LoadDatabase()
-
+    
     -- Track entry count before import
     local beforeCount = 0
     for _ in pairs(Database.content) do
         beforeCount = beforeCount + 1
     end
-
+    
     -- Import additional data
     Database_import.importDatabase(Database)
-
+    
     -- Count entries after import
     local afterCount = 0
     for _ in pairs(Database.content) do
         afterCount = afterCount + 1
     end
-
+    
     -- Show a summary of the import
     local newEntries = afterCount - beforeCount
     if newEntries > 0 then
         printc(255, 255, 0, 255, string.format("[Database] Imported %d new entries from external sources", newEntries))
     end
-
+    
     -- Save combined database only if we have entries or imports
     if afterCount > 0 then
         if Database.SaveDatabase() then
             printc(100, 255, 100, 255, string.format("[Database] Saved database with %d total entries", afterCount))
         end
     end
+    
+    -- Check if Database_Fetcher is available and has auto-fetch enabled
+    pcall(function()
+        local Fetcher = Database_Fetcher
+        if Fetcher and Fetcher.Config and Fetcher.Config.AutoFetchOnLoad then
+            Fetcher.AutoFetch(Database)
+        end
+    end)
+end
+
+-- Add utility functions to trigger fetching
+function Database.FetchUpdates(silent)
+    if Database_Fetcher then
+        return Database_Fetcher.FetchAll(Database, function(totalAdded)
+            if totalAdded > 0 then
+                Database.SaveDatabase()
+                if not silent then
+                    printc(0, 255, 0, 255, "[Database] Updated with " .. totalAdded .. " new entries")
+                end
+            elseif not silent then
+                print("[Database] No new entries were added")
+            end
+        end, silent)
+    else
+        if not silent then
+            print("[Database] Error: Database_Fetcher module not found")
+        end
+        return false
+    end
+end
+
+-- Auto update function that can be called from anywhere
+function Database.AutoUpdate()
+    return Database.FetchUpdates(true)
 end
 
 -- Register unload callback

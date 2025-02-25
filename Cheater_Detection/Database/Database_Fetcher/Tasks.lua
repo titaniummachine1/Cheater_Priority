@@ -1,13 +1,15 @@
 -- Task management system for coroutines
 
 local Tasks = {
-    queue = {},       -- Task queue
-    current = nil,    -- Current running coroutine
-    status = "idle",  -- Current status (idle, running, etc.)
-    progress = 0,     -- Progress value (0-100)
-    message = "",     -- Status message
-    callback = nil,   -- Callback to run when all tasks complete
-    isRunning = false -- Is the task system currently running
+    queue = {},        -- Task queue
+    current = nil,     -- Current running coroutine
+    status = "idle",   -- Current status (idle, running, etc.)
+    progress = 0,      -- Progress value (0-100)
+    message = "",      -- Status message
+    callback = nil,    -- Callback to run when all tasks complete
+    isRunning = false, -- Is the task system currently running
+    silent = false,    -- Whether to show UI
+    smoothProgress = 0 -- Smooth progress value for UI animation
 }
 
 -- Rate limiting help - sleep between requests to avoid hitting limits
@@ -56,25 +58,40 @@ function Tasks.Process()
             Tasks.message = "Error: " .. tostring(result)
         elseif coroutine.status(co) == "dead" then
             -- Task completed
+            local completedTask = Tasks.current
             Tasks.current = nil
 
             -- Update progress
             local totalTasks = #Tasks.queue
-            Tasks.progress = math.min(100, math.floor((1 - totalTasks / (totalTasks + 1)) * 100))
+            local completedTasks = totalTasks > 0 and (1 - totalTasks / (totalTasks + 1)) or 1
+            Tasks.progress = math.min(100, math.floor(completedTasks * 100))
 
             -- Check if we're done with all tasks
             if #Tasks.queue == 0 then
                 Tasks.status = "complete"
                 Tasks.message = "All tasks completed"
-                Tasks.isRunning = false
                 Tasks.progress = 100
 
                 -- Execute callback if one exists
-                if Tasks.callback then
-                    Tasks.callback(result)
-                    Tasks.callback = nil
-                end
+                local taskCallback = Tasks.callback
+
+                -- Delay marking as not running until after callback to ensure UI shows 100%
+                callbacks.Run(function()
+                    if taskCallback then
+                        taskCallback(result)
+                    end
+
+                    -- Wait briefly before marking as complete so UI can show 100%
+                    callbacks.Register("Draw", "CDTasks_Complete", function()
+                        Tasks.isRunning = false
+                        Tasks.callback = nil
+                        callbacks.Unregister("Draw", "CDTasks_Complete")
+                    end)
+                end)
             end
+
+            -- Return the result from the completed task
+            return result
         end
     end
 end
@@ -89,5 +106,22 @@ function Tasks.CancelAll()
     Tasks.isRunning = false
     Tasks.callback = nil
 end
+
+-- Debug function to print task status
+function Tasks.PrintDebug()
+    print("Tasks Status: " .. Tasks.status)
+    print("Is Running: " .. tostring(Tasks.isRunning))
+    print("Progress: " .. Tasks.progress .. "%")
+    print("Message: " .. Tasks.message)
+    print("Queue Length: " .. #Tasks.queue)
+    print("Current Task: " .. (Tasks.current and Tasks.current.description or "None"))
+    print("Silent Mode: " .. tostring(Tasks.silent))
+end
+
+-- Register debug command
+pcall(function()
+    local Commands = require("Cheater_Detection.Utils.Common").Lib.Utils.Commands
+    Commands.Register("cd_tasks_debug", Tasks.PrintDebug, "Print task system debug info")
+end)
 
 return Tasks

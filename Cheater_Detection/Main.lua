@@ -7,24 +7,93 @@
     Alchemist for testing and party callout
 ]]
 
---[[ actiave the script Modules]]
+--[[ Import core utilities ]]
 local Common = require("Cheater_Detection.Utils.Common")
 local G = require("Cheater_Detection.Utils.Globals")
 local Config = require("Cheater_Detection.Utils.Config")
-local Database = require("Cheater_Detection.Database.Database")
+
+--[[ Import database system ]]
+local DBManager = require("Cheater_Detection.Database.Manager")
+
+--[[ UI components ]]
+require("Cheater_Detection.Misc.Visuals.Menu")
+
+--[[ Detection modules (uncomment when needed) ]]
 --local Detections = require("Cheater_Detection.Detections")
---require("Cheater_Detection.Visuals") --wake up the visuals
---require("Cheater_Detection.Modules.EventHandler") --wake up the visuals
-require("Cheater_Detection.Misc.Visuals.Menu") --wake up the visuals
+--require("Cheater_Detection.Visuals")
+--require("Cheater_Detection.Modules.EventHandler")
 
 --[[ Variables ]]
-
 local WPlayer, PR = Common.WPlayer, Common.PlayerResource
 
-Config.LoadCFG() --load config on load of script
-Database.LoadDatabase() --load database inicialy to have stable databse first before loadign imports
-
-playerlist.SetPriority(entities.GetLocalPlayer(), 0) --debug
+--[[ Initialize systems ]]
+local function InitializeSystems()
+    -- Load config
+    Config.LoadCFG()
+    
+    -- Initialize database system through manager (this handles loading, importing and auto-fetching)
+    G.Database = DBManager.Initialize({
+        AutoFetchOnLoad = true,  -- Automatically fetch updates on startup
+        CheckInterval = 24       -- Check for updates every 24 hours
+    })
+    
+    -- Clear local player from cheater list (for debugging)
+    local localPlayer = entities.GetLocalPlayer()
+    if localPlayer then
+        local mySteamID = Common.GetSteamID64(localPlayer)
+        playerlist.SetPriority(mySteamID, 0)
+    end
+    
+    -- Print initialization message
+    local dbStats = DBManager.GetStats()
+    printc(100, 255, 100, 255, string.format("[Cheater Detection] Initialized with %d database entries", dbStats.totalEntries))
+    
+    -- Register console commands for database management
+    Commands.Register("cd_check", function(args)
+        if #args < 1 then
+            print("Usage: cd_check <steamid or name fragment>")
+            return
+        end
+        
+        local query = args[1]
+        local found = false
+        
+        -- Check if it's a valid SteamID
+        if query:match("^%d+$") and #query >= 17 then
+            local record = G.Database.GetRecord(query)
+            if record then
+                found = true
+                print(string.format("[Database] Found record for SteamID: %s", query))
+                print(string.format("  Name: %s", record.Name or "Unknown"))
+                print(string.format("  Cause: %s", record.cause or "Unknown"))
+                print(string.format("  Date: %s", record.date or "Unknown"))
+            end
+        end
+        
+        -- If not found by SteamID, search by name
+        if not found then
+            local matches = 0
+            for steamId, data in pairs(G.Database.content or {}) do
+                if data.Name and data.Name:lower():find(query:lower()) then
+                    matches = matches + 1
+                    print(string.format("[Database] Match %d: %s (SteamID: %s)", matches, data.Name, steamId))
+                    print(string.format("  Cause: %s", data.cause or "Unknown"))
+                    print(string.format("  Date: %s", data.date or "Unknown"))
+                    
+                    -- Limit to 5 matches to avoid spam
+                    if matches >= 5 then
+                        print(string.format("[Database] Found more matches, showing first 5 only"))
+                        break
+                    end
+                end
+            end
+            
+            if matches == 0 then
+                print(string.format("[Database] No records found for: %s", query))
+            end
+        end
+    end, "Check if a player is in the cheat database")
+end
 
 --[[ Update the player data every tick ]]--
 local function OnCreateMove(cmd)
@@ -44,7 +113,16 @@ local function OnCreateMove(cmd)
             return
         end
 
-
+        -- Check if player is a known cheater in database
+        if G.Database and G.Database.GetRecord(steamid) then
+            -- Player is in database, mark them
+            local priority = playerlist.GetPriority(steamid)
+            if priority < 10 then
+                playerlist.SetPriority(steamid, 10)
+            end
+            -- Skip detection checks for known cheaters
+            goto continue
+        end
 
         if Common.IsValidPlayer(entity, true) and not Common.IsCheater(steamid) then
             -- Initialize player data if it doesn't exist
@@ -64,13 +142,14 @@ local function OnCreateMove(cmd)
             -- Gather player data
             G.PlayerData[steamid].Current = Common.createRecord(viewAngles, viewPos, headHitboxPosition, bodyHitboxPosition, simulationTime, isOnGround)
 
-            -- Perform detection checks
-            Detections.CheckAngles(wrappedPlayer, entity)
-            Detections.CheckDuckSpeed(wrappedPlayer, entity)
-            Detections.CheckBunnyHop(wrappedPlayer, entity)
-            Detections.CheckPacketChoke(wrappedPlayer, entity)
-            Detections.CheckSequenceBurst(wrappedPlayer, entity)
-            --Detections.rtrue(entity) --debug
+            -- Perform detection checks (when Detections module is enabled)
+            if Detections then
+                Detections.CheckAngles(wrappedPlayer, entity)
+                Detections.CheckDuckSpeed(wrappedPlayer, entity)
+                Detections.CheckBunnyHop(wrappedPlayer, entity)
+                Detections.CheckPacketChoke(wrappedPlayer, entity)
+                Detections.CheckSequenceBurst(wrappedPlayer, entity)
+            end
 
             -- Update history
             G.PlayerData[steamid].History = G.PlayerData[steamid].History or {}
@@ -81,13 +160,26 @@ local function OnCreateMove(cmd)
                 table.remove(G.PlayerData[steamid].History, 1)
             end
         end
+        
+        ::continue::
     end
 end
 
 --[[ Callbacks ]]
+callbacks.Register("CreateMove", "Cheater_detection", OnCreateMove)
 
---[[ Unregister previous callbacks ]]--
---callbacks.Unregister("CreateMove", "Cheater_detection")                     -- unregister the "CreateMove" callback
+-- Initialize everything on script load
+InitializeSystems()
 
---[[ Register callbacks ]]--
---callbacks.Register("CreateMove", "Cheater_detection", OnCreateMove)        -- register the "CreateMove" callback
+-- Provide global access to main module functions
+return {
+    ReloadDatabase = function() 
+        G.Database = DBManager.Initialize({AutoFetchOnLoad = true})
+    end,
+    
+    UpdateDatabase = function()
+        DBManager.ForceUpdate()
+    end,
+    
+    GetDatabaseStats = DBManager.GetStats
+}
