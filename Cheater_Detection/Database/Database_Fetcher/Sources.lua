@@ -1,4 +1,4 @@
--- Source definitions for database fetching
+-- Source definitions for database fetching with updated URLs
 
 local Sources = {}
 
@@ -6,9 +6,9 @@ local Sources = {}
 Sources.List = {
     {
         name = "bots.tf",
-        url = "http://api.bots.tf/rawtext",
+        url = "http://api.bots.tf/rawtext", -- Exact URL from the Python code
         cause = "Bot",
-        parser = "raw"
+        parser = "raw" -- Use raw parser for this endpoint
     },
     {
         name = "d3fc0n6 Cheater List",

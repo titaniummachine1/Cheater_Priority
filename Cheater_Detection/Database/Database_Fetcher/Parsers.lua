@@ -1,4 +1,4 @@
--- Enhanced parsers with retry logic and better error handling
+-- Enhanced parsers with improved HTML detection and better error handling
 
 local Common = require("Cheater_Detection.Utils.Common")
 local Json = Common.Json
@@ -13,22 +13,61 @@ Parsers.Config = {
     RequestTimeout = 10, -- Maximum time to wait for a response (seconds)
     YieldInterval = 500, -- Yield after processing this many items
     MaxRetries = 3,      -- Maximum number of retry attempts
-    RetryOnEmpty = true  -- Retry if response is empty
+    RetryOnEmpty = true, -- Retry if response is empty
+    DebugMode = true,    -- Enable detailed error logging
+    UserAgents = {  -- Add different user agents to rotate through
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15"
+    },
+    CurrentUserAgent = 1,  -- Index of current user agent to use
+    AllowHtml = false,     -- Whether to allow HTML responses (usually indicates an error)
+    MaxErrorDisplayLength = 80  -- Maximum length of error messages to display
 }
 
--- Improved HTTP download with retry logic and better error handling
+-- Error logging function with debug mode control
+function Parsers.LogError(message, details)
+    -- Always log critical errors
+    print("[Database Fetcher] Error: " .. message)
+
+    -- Log additional details only in debug mode
+    if Parsers.Config.DebugMode and details then
+        if type(details) == "string" and #details > 100 then
+            -- Truncate very long details to prevent console overflow
+            print("[Database Fetcher] Details: " .. details:sub(1, 100) .. "... (truncated)")
+        else
+            print("[Database Fetcher] Details: " .. tostring(details))
+        end
+    end
+
+    -- Set the task message with a safe truncated version
+    local displayMessage = message
+    if #displayMessage > Parsers.Config.MaxErrorDisplayLength then
+        displayMessage = displayMessage:sub(1, Parsers.Config.MaxErrorDisplayLength) .. "..."
+    end
+    
+    if Tasks and Tasks.message then
+        Tasks.message = "Error: " .. displayMessage
+    end
+end
+
+-- Safe download with better error handling and user agent rotation
 function Parsers.Download(url, retryCount)
     retryCount = retryCount or Parsers.Config.MaxRetries
     local retry = 0
     local lastError = nil
 
     while retry < retryCount do
-        Tasks.message = "Downloading from " .. url .. " (attempt " .. (retry + 1) .. "/" .. retryCount .. ")"
+        -- Rotate user agents on retries
+        Parsers.Config.CurrentUserAgent = 1 + (retry % #Parsers.Config.UserAgents)
+        local userAgent = Parsers.Config.UserAgents[Parsers.Config.CurrentUserAgent]
+
+        Tasks.message = "Downloading from " .. url:sub(1, 40) .. "... (try " .. (retry + 1) .. "/" .. retryCount .. ")"
         coroutine.yield()
 
-        -- Start a timer to detect timeouts
-        local startTime = globals.RealTime()
         local requestTimedOut = false
+        local startTime = globals.RealTime()
+        local response = nil
 
         -- Create a timeout checker
         local timeoutCheckerId = "request_timeout_" .. tostring(math.random(1000000))
@@ -39,27 +78,54 @@ function Parsers.Download(url, retryCount)
             end
         end)
 
-        -- Attempt the HTTP request
-        local success, response
-        success, response = pcall(http.Get, url)
+        -- Attempt the HTTP request with custom headers
+        local success, result = pcall(function()
+            local headers = {
+                ["User-Agent"] = userAgent,
+                ["Accept"] = "text/plain, application/json",
+                ["Cache-Control"] = "no-cache"
+            }
+            
+            -- Use http.Get with headers
+            return http.Get(url, headers)
+        end)
 
         -- Unregister the timeout checker
         callbacks.Unregister("Draw", timeoutCheckerId)
 
-        -- Process the result
+        -- Process the result with more robust error handling
         if requestTimedOut then
             lastError = "Request timed out"
         elseif not success then
-            lastError = tostring(response)
-        elseif not response or #response == 0 then
+            lastError = "HTTP error: " .. tostring(result)
+        elseif not result then
+            lastError = "Empty response"
+        elseif type(result) ~= "string" then
+            lastError = "Invalid response type: " .. type(result)
+        elseif #result == 0 then
             if Parsers.Config.RetryOnEmpty then
                 lastError = "Empty response"
             else
                 return "" -- Return empty string if empty responses are acceptable
             end
         else
-            -- Success! Return the response
-            return response
+            -- Check for HTML response (likely an error page)
+            if result:match("<!DOCTYPE html>") or result:match("<html") then
+                if not Parsers.Config.AllowHtml then
+                    lastError = "Received HTML instead of data (website error or CAPTCHA)"
+                    -- Print more detailed info in debug mode
+                    if Parsers.Config.DebugMode then
+                        print("[Parsers] HTML response from " .. url .. " (length: " .. #result .. ")")
+                        print("[Parsers] First 100 chars: " .. result:sub(1, 100))
+                    end
+                else
+                    -- HTML allowed for this request
+                    return result
+                end
+            else
+                -- Success! Return the response
+                return result
+            end
         end
 
         -- Failed, try again
@@ -67,121 +133,474 @@ function Parsers.Download(url, retryCount)
         if retry < retryCount then
             -- Wait with exponential backoff
             local waitTime = Parsers.Config.RetryDelay * (Parsers.Config.RetryBackoff ^ (retry - 1))
-            Tasks.message = "Download failed (" .. lastError .. "). Retrying in " .. waitTime .. " seconds..."
+            Tasks.message = "Retry in " .. waitTime .. "s: " .. lastError:sub(1, 50)
 
             -- Wait with a countdown
             local startWait = globals.RealTime()
             while globals.RealTime() < startWait + waitTime do
                 local remaining = math.ceil((startWait + waitTime) - globals.RealTime())
-                Tasks.message = "Retry in " .. remaining .. "s (" .. lastError .. ")..."
+                Tasks.message = "Retry in " .. remaining .. "s: " .. lastError:sub(1, 50)
                 coroutine.yield()
             end
         end
     end
 
     -- All retries failed
-    print("[Database Fetcher] Download failed after " .. retryCount .. " attempts: " .. (lastError or "Unknown error"))
+    Parsers.LogError("Download failed after " .. retryCount .. " attempts", lastError)
     return nil
 end
 
--- Improved ConvertToSteamID64 with better error handling
-function Parsers.ConvertToSteamID64(steamid)
-    if not steamid then return nil end
+-- More robust SteamID conversion
+function Parsers.ConvertToSteamID64(input)
+    if not input then return nil end
+
+    -- Safety check for unexpected input types
+    if type(input) ~= "string" and type(input) ~= "number" then
+        return nil
+    end
+
+    local steamid = tostring(input):match("^%s*(.-)%s*$") -- Trim whitespace
 
     -- If already a SteamID64, just return it
-    if type(steamid) == "string" and steamid:match("^%d+$") and #steamid == 17 then
+    if steamid:match("^%d+$") and #steamid >= 15 and #steamid <= 20 then
         return steamid
     end
 
     -- Try direct conversion with error handling
     local success, result = pcall(function()
-        return steam.ToSteamID64(tostring(steamid))
+        if steamid:match("^STEAM_0:%d:%d+$") or steamid:match("^%[U:1:%d+%]$") then
+            return steam.ToSteamID64(steamid)
+        end
+        return nil
     end)
 
-    if success and result and #result == 17 then
+    if success and result and type(result) == "string" and #result >= 15 then
         return result
     end
 
     -- Manual conversion for SteamID3
-    if type(steamid) == "string" and steamid:match("^%[U:1:%d+%]$") then
-        local accountID = steamid:match("%[U:1:(%d+)%]")
-        if accountID then
+    if steamid:match("^%[U:1:%d+%]$") then
+        local accountID = steamid:match("%[U:1:(%d+)%]$")
+        if accountID and tonumber(accountID) then
             local steamID64 = tostring(76561197960265728 + tonumber(accountID))
             -- Validate the result
-            if #steamID64 == 17 and steamID64:match("^%d+$") then
+            if #steamID64 >= 15 and #steamID64 <= 20 and steamID64:match("^%d+$") then
                 return steamID64
             end
+        end
+    end
+
+    -- Handle plain numeric IDs that might be account IDs
+    if steamid:match("^%d+$") and tonumber(steamid) < 1000000000 then
+        local steamID64 = tostring(76561197960265728 + tonumber(steamid))
+        if #steamID64 >= 15 and #steamID64 <= 20 then
+            return steamID64
         end
     end
 
     return nil
 end
 
--- Process raw ID list - with improved error handling and progress reporting
+-- Safe function to process a line from a raw list
+function Parsers.ProcessRawLine(line, database, sourceCause)
+    -- Check for nil inputs
+    if not line or not database or not sourceCause then
+        return false, 0, "Missing required parameters"
+    end
+
+    -- Initialize counters
+    local added = 0
+    local skipped = 0
+    local invalid = 0
+
+    local success, errorMsg = pcall(function()
+        -- Trim and validate line
+        local trimmedLine = line:match("^%s*(.-)%s*$") or ""
+
+        -- Skip comments, empty lines, and other non-ID lines
+        if trimmedLine ~= "" and
+            not trimmedLine:match("^%-%-") and
+            not trimmedLine:match("^#") and
+            not trimmedLine:match("^//") and
+            not trimmedLine:match("^<!") then
+            -- Attempt to extract a SteamID from various formats
+            local steamID64 = Parsers.ConvertToSteamID64(trimmedLine)
+
+            -- Add to database if valid and not duplicate
+            if steamID64 then
+                if not database.content[steamID64] then
+                    database.content[steamID64] = {
+                        Name = "Unknown",
+                        proof = sourceCause
+                    }
+
+                    -- Set player priority with error handling
+                    pcall(function()
+                        playerlist.SetPriority(steamID64, 10)
+                    end)
+                    added = 1
+                else
+                    skipped = 1
+                end
+            else
+                invalid = 1
+            end
+        else
+            skipped = 1 -- Count skipped comments/empty lines
+        end
+    end)
+
+    if not success then
+        return false, 0, errorMsg
+    else
+        return true, added, { skipped = skipped, invalid = invalid }
+    end
+end
+
+-- Super robust raw list processor
 function Parsers.ProcessRawList(content, database, sourceName, sourceCause)
-    if not content or not database then return 0 end
+    -- Input validation with detailed errors
+    if not content then
+        Parsers.LogError("Empty content from " .. (sourceName or "unknown source"))
+        return 0
+    end
+
+    if not database then
+        Parsers.LogError("Invalid database object")
+        return 0
+    end
+
+    if not sourceName or not sourceCause then
+        Parsers.LogError("Missing source metadata")
+        return 0
+    end
+
+    -- Safety check for database structure
+    if type(database) ~= "table" or type(database.content) ~= "table" then
+        Parsers.LogError("Invalid database structure", type(database))
+        return 0
+    end
 
     Tasks.message = "Processing " .. sourceName .. "..."
     coroutine.yield()
 
+    -- Initialize counters
     local count = 0
     local skipped = 0
     local invalid = 0
     local linesProcessed = 0
+
+    -- First do a quick check of content type
+    if type(content) ~= "string" then
+        Parsers.LogError("Invalid content type: " .. type(content))
+        return 0
+    end
+
+    -- Check for HTML content that might be an error page
+    if content:match("<!DOCTYPE html>") or content:match("<html>") then
+        Parsers.LogError("Received HTML instead of raw data", content:sub(1, 200))
+        return 0
+    end
+
+    -- Count lines for progress reporting
+    local lines = {}
     local totalLines = 0
 
-    -- First count the lines to provide better progress reporting
-    for _ in content:gmatch("[^\r\n]+") do
-        totalLines = totalLines + 1
-        if totalLines % 1000 == 0 then
-            Tasks.message = "Counting lines in " .. sourceName .. "... (" .. totalLines .. ")"
-            coroutine.yield()
+    -- Extract lines with error handling
+    local success, errorMsg = pcall(function()
+        for line in content:gmatch("[^\r\n]+") do
+            table.insert(lines, line)
+            totalLines = totalLines + 1
         end
+    end)
+
+    if not success then
+        Parsers.LogError("Failed to parse lines from " .. sourceName, errorMsg)
+        return 0
+    end
+
+    if totalLines == 0 then
+        Parsers.LogError("No lines found in " .. sourceName, "Content length: " .. #content)
+        return 0
     end
 
     Tasks.message = "Processing " .. totalLines .. " lines from " .. sourceName
     coroutine.yield()
 
-    -- Process all lines with periodic updates
-    for line in content:gmatch("[^\r\n]+") do
-        -- Trim and filter with error handling
-        local trimmedLine = line
-        pcall(function()
-            trimmedLine = line:match("^%s*(.-)%s*$") or ""
-        end)
+    -- Process each line with robust error handling
+    for i, line in ipairs(lines) do
+        local success, added, extraInfo = Parsers.ProcessRawLine(line, database, sourceCause)
 
-        -- Skip comments and empty lines
-        if trimmedLine ~= "" and not trimmedLine:match("^%-%-") and not trimmedLine:match("^#") then
-            -- Convert ID format if needed
-            local steamID64 = Parsers.ConvertToSteamID64(trimmedLine)
-
-            -- Add to database if valid and not duplicate
-            if steamID64 and not database.content[steamID64] then
-                database.content[steamID64] = {
-                    Name = "Unknown",
-                    proof = sourceCause
-                }
-
-                -- Set player priority
-                pcall(function()
-                    playerlist.SetPriority(steamID64, 10)
-                end)
-                count = count + 1
-            elseif steamID64 then
-                skipped = skipped + 1
-            else
-                invalid = invalid + 1
+        if success then
+            count = count + added
+            if type(extraInfo) == "table" then
+                skipped = skipped + extraInfo.skipped
+                invalid = invalid + extraInfo.invalid
             end
+        else
+            -- Log but continue on errors
+            if Parsers.Config.DebugMode then
+                Parsers.LogError("Error processing line " .. i, extraInfo)
+            end
+            invalid = invalid + 1
         end
 
         linesProcessed = linesProcessed + 1
 
         -- Update progress periodically
         if linesProcessed % Parsers.Config.YieldInterval == 0 or linesProcessed == totalLines then
-            local progressPct = math.floor((linesProcessed / totalLines) * 100)
-            Tasks.message = string.format("Processing %s... %d%% (%d added, %d skipped, %d invalid)",
-                sourceName, progressPct, count, skipped, invalid)
+            local progressPct = totalLines > 0 and math.floor((linesProcessed / totalLines) * 100) or 0
+            Tasks.message = string.format("Processing %s: %d%% (%d added, %d skipped)",
+                sourceName, progressPct, count, skipped)
             coroutine.yield()
+        end
+    end
+
+    Tasks.message = string.format("Finished %s: %d added, %d skipped, %d invalid",
+        sourceName, count, skipped, invalid)
+    coroutine.yield()
+
+    -- Clear lines table to free memory
+    lines = nil
+    collectgarbage("collect")
+
+    return count
+end
+
+-- Process a source with improved error handling
+function Parsers.ProcessSource(source, database)
+    -- Validate inputs
+    if not source then
+        Parsers.LogError("Source is nil")
+        return 0
+    end
+
+    if not database then
+        Parsers.LogError("Database is nil")
+        return 0
+    end
+
+    if not source.url or not source.parser or not source.cause then
+        local missingFields = {}
+        if not source.url then table.insert(missingFields, "url") end
+        if not source.parser then table.insert(missingFields, "parser") end
+        if not source.cause then table.insert(missingFields, "cause") end
+
+        Parsers.LogError("Invalid source configuration: missing " .. table.concat(missingFields, ", "))
+        return 0
+    end
+
+    local sourceName = source.name or "Unknown Source"
+    Tasks.message = "Fetching from " .. sourceName .. "..."
+
+    -- Check if source is available from Github backup if original fails
+    local sourceUrls = {
+        primary = source.url,
+        backup = nil
+    }
+    
+    -- If the URL isn't a Github raw URL already, add a backup GitHub mirror path
+    if not source.url:match("raw.githubusercontent.com") then
+        sourceUrls.backup = "https://raw.githubusercontent.com/user/cheater-list-mirrors/main/" .. 
+                            sourceName:gsub("%s+", "_"):lower() .. ".txt"
+    end
+    
+    -- Try to download content
+    local content
+    
+    -- Try primary URL
+    content = Parsers.Download(sourceUrls.primary)
+    
+    -- If primary failed and we have a backup, try it
+    if (not content or #content == 0) and sourceUrls.backup then
+        Tasks.message = "Primary URL failed, trying backup..."
+        content = Parsers.Download(sourceUrls.backup)
+    end
+    
+    -- If all downloads failed
+    if not content or #content == 0 then
+        Parsers.LogError("Failed to fetch from " .. sourceName)
+        return 0
+    end
+
+    -- Process content based on parser type with full error handling
+    local count = 0
+
+    if source.parser == "raw" then
+        local success, result = pcall(function()
+            return Parsers.ProcessRawList(content, database, sourceName, source.cause)
+        end)
+
+        if success then
+            count = result
+        else
+            Parsers.LogError("Failed to parse raw list from " .. sourceName, result)
+        end
+    elseif source.parser == "tf2db" then
+        local success, result = pcall(function()
+            return Parsers.ProcessTF2DB(content, database, source)
+        end)
+
+        if success then
+            count = result
+        else
+            Parsers.LogError("Failed to parse TF2DB data from " .. sourceName, result)
+        end
+    else
+        Parsers.LogError("Unknown parser type: " .. source.parser)
+    end
+
+    -- Clear content to free memory
+    content = nil
+    collectgarbage("collect")
+
+    return count
+end
+
+-- Improved TF2DB parser with much better error handling
+function Parsers.ProcessTF2DB(content, database, source)
+    -- Input validation
+    if not content or not database or not source then
+        Parsers.LogError("Missing required parameters for ProcessTF2DB")
+        return 0
+    end
+
+    local sourceName = source.name or "Unknown TF2DB Source"
+    Tasks.message = "Processing " .. sourceName .. "..."
+    coroutine.yield()
+
+    -- Track stats
+    local count = 0
+    local skipped = 0
+    local invalid = 0
+    local processed = 0
+
+    -- First try parsing as JSON (safer approach)
+    local jsonSuccess, data = pcall(Json.decode, content)
+
+    if jsonSuccess and type(data) == "table" then
+        -- Process as proper JSON - look for players array or other common structures
+        if type(data.players) == "table" then
+            -- Handle players array format
+            for _, player in ipairs(data.players) do
+                if type(player) == "table" and player.steamid then
+                    local steamID64 = Parsers.ConvertToSteamID64(player.steamid)
+
+                    if steamID64 and not database.content[steamID64] then
+                        database.content[steamID64] = {
+                            Name = player.name or "Unknown",
+                            proof = source.cause
+                        }
+
+                        pcall(function() playerlist.SetPriority(steamID64, 10) end)
+                        count = count + 1
+                    elseif steamID64 then
+                        skipped = skipped + 1
+                    else
+                        invalid = invalid + 1
+                    end
+
+                    processed = processed + 1
+
+                    -- Yield occasionally
+                    if processed % Parsers.Config.YieldInterval == 0 then
+                        Tasks.message = sourceName .. ": " .. processed .. " processed, " .. count .. " added"
+                        coroutine.yield()
+                    end
+                end
+            end
+        else
+            -- Fall back to direct string parsing approach if JSON structure is unexpected
+            return Parsers.ProcessTF2DBString(content, database, source)
+        end
+    else
+        -- JSON parsing failed, try direct string approach
+        return Parsers.ProcessTF2DBString(content, database, source)
+    end
+
+    Tasks.message = string.format("Finished %s: %d added, %d skipped, %d invalid",
+        sourceName, count, skipped, invalid)
+    coroutine.yield()
+
+    collectgarbage("collect")
+    return count
+end
+
+-- Direct string parsing approach for TF2DB with better error handling
+function Parsers.ProcessTF2DBString(content, database, source)
+    local sourceName = source.name or "Unknown Source"
+
+    -- Variables for tracking
+    local count = 0
+    local skipped = 0
+    local invalid = 0
+    local processed = 0
+
+    -- Check for empty content or obvious errors first
+    if not content or #content == 0 then
+        Parsers.LogError("Empty TF2DB content from " .. sourceName)
+        return 0
+    end
+    
+    -- Check if content is valid JSON format
+    if content:match("^%s*{") or content:match("^%s*%[") then
+        -- Try to parse as JSON first (better approach)
+        local success, jsonData = pcall(Json.decode, content)
+        if success and type(jsonData) == "table" then
+            -- Process as JSON
+            return Parsers.ProcessTF2DBJson(jsonData, database, source)
+        end
+    end
+
+    -- Direct string parsing with safety checks
+    local currentIndex = 1
+    local contentLength = #content
+
+    while currentIndex < contentLength and currentIndex > 0 do
+        -- Find next steamid entry with error handling
+        local success, steamIDStart = pcall(function()
+            return content:find('"steamid":%s*"', currentIndex)
+        end)
+
+        if not success or not steamIDStart then break end
+
+        -- Extract steamid with error handling
+        local steamID = nil
+        local extractSuccess = pcall(function()
+            currentIndex = steamIDStart + 10
+            local steamIDEnd = content:find('"', currentIndex)
+            if not steamIDEnd then return end
+
+            steamID = content:sub(currentIndex, steamIDEnd - 1)
+            currentIndex = steamIDEnd + 1
+        end)
+
+        -- Process the extracted steamID safely
+        if extractSuccess and steamID then
+            local steamID64 = Parsers.ConvertToSteamID64(steamID)
+
+            -- Add to database if valid
+            if steamID64 and not database.content[steamID64] then
+                database.content[steamID64] = {
+                    Name = "Unknown",
+                    proof = source.cause
+                }
+
+                pcall(function() playerlist.SetPriority(steamID64, 10) end)
+                count = count + 1
+            elseif steamID64 then
+                skipped = skipped + 1
+            else
+                invalid = invalid + 1
+            end
+
+            processed = processed + 1
+
+            -- Yield occasionally
+            if processed % Parsers.Config.YieldInterval == 0 then
+                Tasks.message = "Processing " .. sourceName .. "... " .. count .. " added"
+                coroutine.yield()
+            end
         end
     end
 
@@ -195,134 +614,73 @@ function Parsers.ProcessRawList(content, database, sourceName, sourceCause)
     return count
 end
 
--- Process a source with improved error handling
-function Parsers.ProcessSource(source, database)
-    if not source or not source.url or not source.parser or not source.cause then
-        print("[Database Fetcher] Invalid source configuration")
-        return 0
-    end
-
-    Tasks.message = "Fetching from " .. source.name .. "..."
-    local content = Parsers.Download(source.url)
-
-    if not content or #content == 0 then
-        print("[Database Fetcher] Failed to fetch from " .. source.name)
-        return 0
-    end
-
-    -- Process based on parser type with error handling
-    local count = 0
-    local success = false
-
-    success, count = pcall(function()
-        if source.parser == "raw" then
-            return Parsers.ProcessRawList(content, database, source.name, source.cause)
-        elseif source.parser == "tf2db" then
-            return Parsers.ProcessTF2DB(content, database, source)
-        else
-            print("[Database Fetcher] Unknown parser type: " .. source.parser)
-            return 0
-        end
-    end)
-
-    -- Clear content to free memory
-    content = nil
-    collectgarbage("collect")
-
-    if not success then
-        print("[Database Fetcher] Error processing " .. source.name .. ": " .. tostring(count))
-        return 0
-    end
-
-    return count
-end
-
--- Simplified TF2DB parser that can handle large files better
-function Parsers.ProcessTF2DB(content, database, source)
-    if not content or not database then return 0 end
-
-    Tasks.message = "Processing " .. source.name .. "..."
+-- New function to process JSON TF2DB data
+function Parsers.ProcessTF2DBJson(jsonData, database, source)
+    local sourceName = source.name or "Unknown Source"
+    Tasks.message = "Processing " .. sourceName .. " JSON..."
     coroutine.yield()
-
-    -- Variables for tracking
+    
+    -- Track stats
     local count = 0
     local skipped = 0
     local invalid = 0
     local processed = 0
-
-    -- Estimate total entries by counting steamid patterns
-    local totalEntries = 0
-    local pos = 1
-    while true do
-        local nextPos = content:find('"steamid":', pos)
-        if not nextPos then break end
-        totalEntries = totalEntries + 1
-        pos = nextPos + 10
-
-        if totalEntries % 1000 == 0 then
-            Tasks.message = "Counting entries in " .. source.name .. "... (" .. totalEntries .. ")"
-            coroutine.yield()
+    
+    -- Check for players array structure
+    if type(jsonData.players) == "table" then
+        local totalPlayers = #jsonData.players
+        Tasks.message = "Processing " .. totalPlayers .. " players from " .. sourceName
+        
+        for _, player in ipairs(jsonData.players) do
+            if type(player) == "table" then
+                -- Extract SteamID from different formats
+                local steamID64 = nil
+                
+                if player.steamid then
+                    steamID64 = Parsers.ConvertToSteamID64(player.steamid)
+                elseif player.steamID64 then
+                    steamID64 = player.steamID64
+                elseif player.attributes and player.attributes[1] == "cheater" then
+                    -- Special handling for certain JSON formats
+                    steamID64 = Parsers.ConvertToSteamID64(player.id)
+                end
+                
+                -- Add to database if valid
+                if steamID64 and not database.content[steamID64] then
+                    database.content[steamID64] = {
+                        Name = player.name or player.player_name or "Unknown",
+                        proof = source.cause
+                    }
+                    
+                    pcall(function() playerlist.SetPriority(steamID64, 10) end)
+                    count = count + 1
+                elseif steamID64 then
+                    skipped = skipped + 1
+                else
+                    invalid = invalid + 1
+                end
+            end
+            
+            processed = processed + 1
+            
+            -- Yield occasionally to update progress
+            if processed % Parsers.Config.YieldInterval == 0 or processed == totalPlayers then
+                local progressPct = totalPlayers > 0 and math.floor((processed / totalPlayers) * 100) or 100
+                Tasks.message = string.format("%s: %d%% (%d added, %d skipped)", 
+                    sourceName, progressPct, count, skipped)
+                coroutine.yield()
+            end
         end
+    else
+        -- Handle other JSON structures
+        Parsers.LogError("Unknown JSON structure for " .. sourceName)
     end
-
-    Tasks.message = "Processing " .. totalEntries .. " entries from " .. source.name
-    coroutine.yield()
-
-    -- Direct string parsing approach for better performance
-    local currentIndex = 1
-    local contentLength = #content
-
-    while currentIndex < contentLength do
-        -- Find next steamid entry
-        local steamIDStart = content:find('"steamid":%s*"', currentIndex)
-        if not steamIDStart then break end
-
-        -- Extract steamid
-        currentIndex = steamIDStart + 10
-        local steamIDEnd = content:find('"', currentIndex)
-        if not steamIDEnd then break end
-
-        local steamID = content:sub(currentIndex, steamIDEnd - 1)
-        currentIndex = steamIDEnd + 1
-
-        -- Convert to SteamID64
-        local steamID64 = Parsers.ConvertToSteamID64(steamID)
-
-        -- Add to database if valid
-        if steamID64 and not database.content[steamID64] then
-            database.content[steamID64] = {
-                Name = "Unknown",
-                proof = source.cause
-            }
-
-            pcall(function()
-                playerlist.SetPriority(steamID64, 10)
-            end)
-            count = count + 1
-        elseif steamID64 then
-            skipped = skipped + 1
-        else
-            invalid = invalid + 1
-        end
-
-        processed = processed + 1
-
-        -- Update progress periodically
-        if processed % Parsers.Config.YieldInterval == 0 or processed >= totalEntries then
-            local progressPct = math.floor((processed / totalEntries) * 100)
-            Tasks.message = string.format("Processing %s... %d%% (%d added, %d skipped, %d invalid)",
-                source.name, progressPct, count, skipped, invalid)
-            coroutine.yield()
-        end
-    end
-
+    
     Tasks.message = string.format("Finished %s: %d added, %d skipped, %d invalid",
-        source.name, count, skipped, invalid)
+        sourceName, count, skipped, invalid)
     coroutine.yield()
-
-    -- Clean up
+    
     collectgarbage("collect")
-
     return count
 end
 

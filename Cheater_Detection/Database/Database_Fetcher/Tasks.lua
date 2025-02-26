@@ -1,4 +1,4 @@
--- Simplified task system with direct processing approach
+-- Simplified task system with improved error handling and text wrapping
 
 local Tasks = {
     queue = {},         -- Task queue (simplified)
@@ -12,8 +12,10 @@ local Tasks = {
 
 -- Basic configuration
 Tasks.Config = {
-    DebugMode = false,  -- Enable debug logging
-    YieldInterval = 500 -- Process this many items before yielding
+    DebugMode = false,     -- Enable debug logging
+    YieldInterval = 500,   -- Process this many items before yielding
+    MaxMessageLength = 40, -- Max message length before truncating in UI
+    MaxErrorLength = 120   -- Max error message length to display
 }
 
 -- Simple progress tracking (no batches)
@@ -31,10 +33,28 @@ function Tasks.Sleep(ms)
     end
 end
 
--- Initialize task tracking
+-- Safe error handling
+function Tasks.LogError(message, details)
+    print("[Tasks] ERROR: " .. message)
+    if details then
+        if type(details) == "string" and #details > 200 then
+            print("[Tasks] Details: " .. details:sub(1, 200) .. "... (truncated)")
+        else
+            print("[Tasks] Details: " .. tostring(details))
+        end
+    end
+    
+    -- Set error message in UI
+    Tasks.message = "ERROR: " .. message:sub(1, Tasks.Config.MaxErrorLength)
+    if #message > Tasks.Config.MaxErrorLength then
+        Tasks.message = Tasks.message .. "..."
+    end
+end
+
+-- Initialize task tracking with error handling
 function Tasks.Init(sourceCount)
     Tasks.tracking = {
-        sourcesTotal = sourceCount,
+        sourcesTotal = sourceCount or 0,
         sourcesDone = 0,
         sourceNames = {}
     }
@@ -45,28 +65,39 @@ function Tasks.Init(sourceCount)
     Tasks.message = "Preparing to fetch sources..."
     
     if Tasks.Config.DebugMode then
-        print("[Tasks] Initialized with " .. sourceCount .. " sources")
+        print("[Tasks] Initialized with " .. Tasks.tracking.sourcesTotal .. " sources")
     end
+    
+    -- Run initial GC
+    collectgarbage("collect")
 end
 
--- Add a task with minimal tracking
+-- Add a task with minimal tracking and error handling
 function Tasks.Add(fn, name)
     if type(fn) ~= "function" then
-        print("[Tasks] Error: Task must be a function")
+        Tasks.LogError("Task must be a function", type(fn))
         return false
     end
     
     table.insert(Tasks.queue, {
         fn = fn,
-        name = name
+        name = name or "Unknown task"
     })
     
     table.insert(Tasks.tracking.sourceNames, name)
     return true
 end
 
--- Start a source processing
+-- Start a source processing with text limit
 function Tasks.StartSource(sourceName)
+    -- Safety check for nil
+    if not sourceName then sourceName = "Unknown source" end
+    
+    -- Truncate long source names
+    if #sourceName > Tasks.Config.MaxMessageLength then
+        sourceName = sourceName:sub(1, Tasks.Config.MaxMessageLength) .. "..."
+    end
+    
     Tasks.message = "Processing: " .. sourceName
     Tasks.currentSource = sourceName
     
@@ -75,13 +106,17 @@ function Tasks.StartSource(sourceName)
     end
 end
 
--- Mark a source as completed
+-- Mark a source as completed with error handling
 function Tasks.SourceDone()
     Tasks.tracking.sourcesDone = Tasks.tracking.sourcesDone + 1
     
     if Tasks.tracking.sourcesTotal > 0 then
         -- Calculate progress based on completed sources
         Tasks.progress = math.floor((Tasks.tracking.sourcesDone / Tasks.tracking.sourcesTotal) * 100)
+        -- Ensure progress never exceeds 100%
+        Tasks.progress = math.min(Tasks.progress, 100)
+    else
+        Tasks.progress = 0
     end
     
     if Tasks.Config.DebugMode then
@@ -92,8 +127,9 @@ function Tasks.SourceDone()
     end
 end
 
--- Reset the task system
+-- Reset the task system with cleanup
 function Tasks.Reset()
+    -- Clear all task data
     Tasks.queue = {}
     Tasks.status = "idle"
     Tasks.progress = 0
@@ -102,14 +138,20 @@ function Tasks.Reset()
     Tasks.callback = nil
     Tasks.currentSource = nil
     
+    -- Clear tracking data
     Tasks.tracking = {
         sourcesTotal = 0,
         sourcesDone = 0,
         sourceNames = {}
     }
     
-    -- Force GC
+    -- Force GC and cleanup
     collectgarbage("collect")
+    
+    -- Unregister any callback that might be lingering
+    pcall(function()
+        callbacks.Unregister("Draw", "TasksProcessCleanup")
+    end)
 end
 
 -- Process all tasks directly - simpler approach
@@ -127,8 +169,14 @@ function Tasks.ProcessAll()
     -- Make sure we render the initial state
     coroutine.yield()
     
-    -- Process each task directly
+    -- Process each task directly with error handling
     for i, task in ipairs(Tasks.queue) do
+        -- Safety check for task validity
+        if not task or type(task) ~= "table" or not task.fn then
+            Tasks.LogError("Invalid task at index " .. i)
+            goto continue
+        end
+        
         Tasks.StartSource(task.name)
         
         -- Calculate progress based on task index
@@ -137,17 +185,31 @@ function Tasks.ProcessAll()
         -- Yield to update UI
         coroutine.yield()
         
-        -- Execute the task function directly
+        -- Execute the task function directly with proper error handling
         local success, result = pcall(task.fn)
         
         if success then
             if type(result) == "number" then
                 totalResult = totalResult + result
             end
-            Tasks.message = "Added " .. result .. " entries from " .. task.name
+            
+            -- Format message with limits
+            local resultMsg = "Added " .. tostring(result) .. " entries from " .. task.name
+            if #resultMsg > Tasks.Config.MaxMessageLength then
+                resultMsg = resultMsg:sub(1, Tasks.Config.MaxMessageLength) .. "..."
+            end
+            Tasks.message = resultMsg
         else
-            Tasks.message = "Error in " .. task.name .. ": " .. tostring(result)
-            print("[Tasks] Error in " .. task.name .. ": " .. tostring(result))
+            -- Handle error and display message
+            local errorMsg = tostring(result)
+            Tasks.LogError("Error in " .. task.name, errorMsg)
+            
+            -- Format error message with limits
+            local displayError = "Error in " .. task.name .. ": " .. errorMsg
+            if #displayError > Tasks.Config.MaxErrorLength then
+                displayError = displayError:sub(1, Tasks.Config.MaxErrorLength) .. "..."
+            end
+            Tasks.message = displayError
         end
         
         -- Mark this source as done
@@ -155,6 +217,8 @@ function Tasks.ProcessAll()
         
         -- Yield to update UI
         coroutine.yield()
+        
+        ::continue::
     end
     
     -- Mark all processing as complete
@@ -162,29 +226,32 @@ function Tasks.ProcessAll()
     Tasks.progress = 100
     Tasks.message = "All sources processed! Added " .. totalResult .. " entries total."
     
-    -- Run callback if provided
+    -- Run callback if provided with error handling
     if type(Tasks.callback) == "function" then
-        pcall(Tasks.callback, totalResult)
+        local success, err = pcall(Tasks.callback, totalResult)
+        if not success then
+            Tasks.LogError("Callback failed", err)
+        end
     end
     
     -- Give time to show completion
     local startTime = globals.RealTime()
-    while globals.RealTime() < startTime + 2 do
-        coroutine.yield()
+    local function cleanup()
+        if globals.RealTime() < startTime + 2 then return end
+        Tasks.Reset()
+        callbacks.Unregister("Draw", "TasksProcessCleanup")
     end
-    
-    -- Reset after showing completion
-    Tasks.Reset()
+    callbacks.Register("Draw", "TasksProcessCleanup", cleanup)
     
     return totalResult
 end
 
--- Draw progress UI function - simplified version
+-- Draw progress UI function with text wrapping
 function Tasks.DrawProgressUI()
     -- Set up basic dimensions
     local x, y = 15, 15
-    local width = 260
-    local height = 70
+    local width = 280  -- Slightly wider to fit more text
+    local height = 80  -- Slightly taller to fit wrapped text
     local padding = 10
     local barHeight = 12
     
@@ -201,10 +268,68 @@ function Tasks.DrawProgressUI()
     draw.Color(120, 200, 255, 255)
     draw.Text(x + padding, y + padding, "Database Fetcher")
     
-    -- Status message
+    -- Status message with wrapping
     draw.SetFont(draw.CreateFont("Verdana", 12, 400))
     draw.Color(255, 255, 255, 255)
-    draw.Text(x + padding, y + padding + 20, Tasks.message)
+    
+    -- Split message into multiple lines if needed
+    local message = Tasks.message or ""
+    local maxWidth = width - 2 * padding
+    local messageX = x + padding
+    local messageY = y + padding + 22
+    
+    -- Wrap text to fit window width
+    local lines = {}
+    local currentLine = ""
+    local wordWidth, lineWidth = 0, 0
+    
+    for word in message:gmatch("%S+") do
+        wordWidth = draw.GetTextSize(word)
+        
+        if lineWidth + wordWidth + (currentLine ~= "" and draw.GetTextSize(" ") or 0) > maxWidth then
+            -- Line would be too long with this word, start a new line
+            table.insert(lines, currentLine)
+            currentLine = word
+            lineWidth = wordWidth
+        else
+            -- Add word to current line
+            if currentLine ~= "" then
+                currentLine = currentLine .. " " .. word
+                lineWidth = lineWidth + draw.GetTextSize(" ") + wordWidth
+            else
+                currentLine = word
+                lineWidth = wordWidth
+            end
+        end
+    end
+    
+    -- Add the last line
+    if currentLine ~= "" then
+        table.insert(lines, currentLine)
+    end
+    
+    -- If no lines were created, add an empty one
+    if #lines == 0 then
+        table.insert(lines, "")
+    end
+    
+    -- Display lines (limit to 3 lines maximum to fit in the UI)
+    local maxLines = 3
+    for i = 1, math.min(#lines, maxLines) do
+        -- Draw shadow
+        draw.Color(0, 0, 0, 180)
+        draw.Text(messageX + 1, messageY + (i-1) * 14 + 1, lines[i])
+        
+        -- Draw text
+        draw.Color(255, 255, 255, 255)
+        draw.Text(messageX, messageY + (i-1) * 14, lines[i])
+    end
+    
+    -- Show "..." if we had to truncate lines
+    if #lines > maxLines then
+        draw.Color(255, 255, 255, 200)
+        draw.Text(messageX, messageY + maxLines * 14, "...")
+    end
     
     -- Progress bar background
     local barY = y + height - padding - barHeight
