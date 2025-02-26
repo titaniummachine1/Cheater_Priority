@@ -1,6 +1,6 @@
 --[[
     Simplified Database.lua
-    Direct implementation of database functionality without external DB modules
+    Direct implementation of database functionality using native Lua tables
     Stores only essential data: name and proof for each SteamID64
 ]]
 
@@ -18,7 +18,8 @@ local Database = {
     Config = {
         AutoSave = true,
         SaveInterval = 300, -- 5 minutes
-        DebugMode = false
+        DebugMode = false,
+        MaxEntries = 15000  -- Maximum entries to prevent memory issues
     },
 
     -- State tracking
@@ -36,40 +37,45 @@ Database.content = setmetatable({}, {
     end,
 
     __newindex = function(_, key, value)
-        -- Count entries if adding/removing
-        if (Database.data[key] == nil) and value ~= nil then
-            Database.State.entriesCount = Database.State.entriesCount + 1
-        elseif (Database.data[key] ~= nil) and value == nil then
-            Database.State.entriesCount = Database.State.entriesCount - 1
-        end
-
-        -- Simplified data structure - keep only what's needed
-        if value ~= nil then
-            -- Ensure we only store essential data
-            local minimalValue = {
-                Name = type(value) == "table" and (value.Name or "Unknown") or "Unknown",
-                proof = type(value) == "table" and (value.proof or value.cause or "Unknown") or "Unknown"
-            }
-            Database.data[key] = minimalValue
-        else
-            Database.data[key] = nil
-        end
-
-        Database.State.isDirty = true
-
-        -- Auto-save if enabled and enough time has passed
-        if Database.Config.AutoSave then
-            local currentTime = os.time()
-            if currentTime - Database.State.lastSave >= Database.Config.SaveInterval then
-                Database.SaveDatabase()
-            end
-        end
+        Database.HandleSetEntry(key, value)
     end,
 
     __pairs = function()
         return pairs(Database.data)
     end
 })
+
+-- Handle setting an entry with proper counting
+function Database.HandleSetEntry(key, value)
+    -- Count entries if adding/removing
+    if (Database.data[key] == nil) and value ~= nil then
+        Database.State.entriesCount = Database.State.entriesCount + 1
+    elseif (Database.data[key] ~= nil) and value == nil then
+        Database.State.entriesCount = Database.State.entriesCount - 1
+    end
+
+    -- Simplified data structure - keep only what's needed
+    if value ~= nil then
+        -- Ensure we only store essential data
+        local minimalValue = {
+            Name = type(value) == "table" and (value.Name or "Unknown") or "Unknown",
+            proof = type(value) == "table" and (value.proof or value.cause or "Unknown") or "Unknown"
+        }
+        Database.data[key] = minimalValue
+    else
+        Database.data[key] = nil
+    end
+
+    Database.State.isDirty = true
+
+    -- Auto-save if enabled and enough time has passed
+    if Database.Config.AutoSave then
+        local currentTime = os.time()
+        if currentTime - Database.State.lastSave >= Database.Config.SaveInterval then
+            Database.SaveDatabase()
+        end
+    end
+end
 
 -- Find best path for database storage
 function Database.GetFilePath()
@@ -155,14 +161,23 @@ function Database.LoadDatabase(silent)
     Database.data = {}
     Database.State.entriesCount = 0
 
-    -- Copy data with minimal structure
+    -- Copy data with minimal structure - enforce entry limit
+    local entriesAdded = 0
     for steamID, value in pairs(data) do
-        Database.data[steamID] = {
-            Name = type(value) == "table" and (value.Name or "Unknown") or "Unknown",
-            proof = type(value) == "table" and (value.proof or value.cause or "Unknown") or "Unknown"
-        }
-        Database.State.entriesCount = Database.State.entriesCount + 1
+        if entriesAdded < Database.Config.MaxEntries then
+            Database.data[steamID] = {
+                Name = type(value) == "table" and (value.Name or "Unknown") or "Unknown",
+                proof = type(value) == "table" and (value.proof or value.cause or "Unknown") or "Unknown"
+            }
+            Database.State.entriesCount = Database.State.entriesCount + 1
+            entriesAdded = entriesAdded + 1
+        else
+            break
+        end
     end
+
+    -- Clean up memory
+    collectgarbage("collect")
 
     -- Update state
     Database.State.isDirty = false
@@ -185,6 +200,17 @@ end
 function Database.GetProof(steamId)
     local record = Database.content[steamId]
     return record and record.proof or "Unknown"
+end
+
+-- Get name for a player
+function Database.GetName(steamId)
+    local record = Database.content[steamId]
+    return record and record.Name or "Unknown"
+end
+
+-- Check if player is in database
+function Database.Contains(steamId)
+    return Database.data[steamId] ~= nil
 end
 
 -- Set a player as suspect
@@ -281,6 +307,121 @@ function Database.AutoUpdate()
     return Database.FetchUpdates(true)
 end
 
+-- Clean database by removing least important entries
+function Database.Cleanup(maxEntries)
+    maxEntries = maxEntries or Database.Config.MaxEntries
+    
+    -- If we're under the limit, no need to clean
+    if Database.State.entriesCount <= maxEntries then
+        return 0
+    end
+    
+    -- Create a priority list for entries to keep
+    local priorities = {
+        -- Highest priority to keep (exact string matching)
+        "RGL", "Bot", "Pazer List", "Community",
+        -- Lower priority categories
+        "Cheater", "Tacobot", "MCDB", "Suspicious", "Watched"
+    }
+    
+    -- Count entries to remove
+    local toRemove = Database.State.entriesCount - maxEntries
+    local removed = 0
+    
+    -- Remove entries not in priority list first
+    if toRemove > 0 then
+        local nonPriorityEntries = {}
+        
+        for steamId, data in pairs(Database.data) do
+            -- Check if this entry is a priority
+            local isPriority = false
+            local proof = (data.proof or ""):lower()
+            
+            for _, priority in ipairs(priorities) do
+                if proof:find(priority:lower()) then
+                    isPriority = true
+                    break
+                end
+            end
+            
+            if not isPriority then
+                table.insert(nonPriorityEntries, steamId)
+                if #nonPriorityEntries >= toRemove then
+                    break
+                end
+            end
+        end
+        
+        -- Remove the non-priority entries
+        for _, steamId in ipairs(nonPriorityEntries) do
+            Database.content[steamId] = nil
+            removed = removed + 1
+        end
+    end
+    
+    -- If we still need to remove more, start removing lowest priority entries
+    if removed < toRemove then
+        -- Process in reverse priority order
+        for i = #priorities, 1, -1 do
+            local priority = priorities[i]:lower()
+            
+            for steamId, data in pairs(Database.data) do
+                local proof = (data.proof or ""):lower()
+                
+                if proof:find(priority) then
+                    Database.content[steamId] = nil
+                    removed = removed + 1
+                    
+                    if removed >= toRemove then
+                        break
+                    end
+                end
+            end
+            
+            if removed >= toRemove then
+                break
+            end
+        end
+    end
+    
+    -- Save the cleaned database
+    if removed > 0 and Database.State.isDirty then
+        Database.SaveDatabase()
+    end
+    
+    return removed
+end
+
+-- Register database commands
+local function RegisterCommands()
+    local Commands = Common.Lib.Utils.Commands
+    
+    -- Database stats command
+    Commands.Register("cd_db_stats", function()
+        local stats = Database.GetStats()
+        print(string.format("[Database] Total entries: %d", stats.entryCount))
+        print(string.format("[Database] Memory usage: %.2f MB", stats.memoryMB))
+        
+        -- Show proof type breakdown
+        print("[Database] Proof type breakdown:")
+        for proofType, count in pairs(stats.proofTypes) do
+            if count > 10 then -- Only show categories with more than 10 entries
+                print(string.format("  - %s: %d", proofType, count))
+            end
+        end
+    end, "Show database statistics")
+    
+    -- Database cleanup command
+    Commands.Register("cd_db_cleanup", function(args)
+        local limit = tonumber(args[1]) or Database.Config.MaxEntries
+        local beforeCount = Database.State.entriesCount
+        local removed = Database.Cleanup(limit)
+        
+        print(string.format("[Database] Cleaned %d entries (from %d to %d)", 
+            removed, beforeCount, Database.State.entriesCount))
+    end, "Clean the database to stay under entry limit")
+end
+
 -- Auto-save on unload
 local function OnUnload()
     if Database.State.isDirty then
@@ -292,9 +433,17 @@ end
 local function InitializeDatabase()
     -- Load existing database first
     Database.LoadDatabase()
-
+    
     -- Import additional data
     Database.ImportDatabase()
+    
+    -- Clean up if over limit
+    if Database.State.entriesCount > Database.Config.MaxEntries then
+        local removed = Database.Cleanup()
+        if removed > 0 and Database.Config.DebugMode then
+            print(string.format("[Database] Cleaned %d entries to stay under limit", removed))
+        end
+    end
 
     -- Check if Database_Fetcher is available and has auto-fetch enabled
     pcall(function()
@@ -307,6 +456,9 @@ end
 -- Register unload callback
 callbacks.Unregister("Unload", "CDDatabase_Unload")
 callbacks.Register("Unload", "CDDatabase_Unload", OnUnload)
+
+-- Register commands
+RegisterCommands()
 
 -- Initialize the database when this module is loaded
 InitializeDatabase()
