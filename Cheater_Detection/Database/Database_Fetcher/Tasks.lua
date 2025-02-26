@@ -13,6 +13,13 @@ local Tasks = {
     completionTime = 0  -- Time when tasks completed (for timeout handling)
 }
 
+-- Add memory monitoring
+Tasks.MemoryStats = {
+    lastCheck = 0,
+    checkInterval = 1.0, -- Check memory every second
+    lastUsage = 0
+}
+
 -- Rate limiting help - sleep between requests to avoid hitting limits
 function Tasks.Sleep(ms)
     local start = globals.RealTime()
@@ -21,12 +28,24 @@ function Tasks.Sleep(ms)
     end
 end
 
--- Add a task to the queue
+-- Add a task to the queue with enhanced error checking
 function Tasks.Add(taskFn, description, weight)
+    if type(taskFn) ~= "function" then
+        print("[Tasks] Error: Attempted to add non-function task")
+        return -1
+    end
+    
+    local co = coroutine.create(taskFn)
+    if not co then
+        print("[Tasks] Error: Failed to create coroutine")
+        return -1
+    end
+    
     table.insert(Tasks.queue, {
-        co = coroutine.create(taskFn),
+        co = co,
         description = description or "Unknown task",
-        weight = weight or 1
+        weight = weight or 1,
+        created = globals.RealTime()
     })
 
     -- Start processing if not already running
@@ -36,9 +55,10 @@ function Tasks.Add(taskFn, description, weight)
     return #Tasks.queue
 end
 
--- Reset task system state completely
+-- More thorough reset function to prevent memory leaks
 function Tasks.Reset()
-    Tasks.queue = {}
+    -- Clear all tables instead of recreating them
+    for k in pairs(Tasks.queue) do Tasks.queue[k] = nil end
     Tasks.current = nil
     Tasks.status = "idle"
     Tasks.progress = 0
@@ -49,13 +69,30 @@ function Tasks.Reset()
     Tasks.completionTime = 0
     Tasks.silent = false
     
+    -- Force garbage collection
+    collectgarbage("stop")  -- Disable automatic collection
+    collectgarbage("collect")
+    collectgarbage("restart")
+    
     -- Unregister any lingering callbacks
     callbacks.Unregister("Draw", "CDTasks_Complete")
 end
 
--- Process the next available task
+-- Optimized task processing function to prevent ruRBtree overflow
 function Tasks.Process()
     if not Tasks.isRunning then return end
+    
+    -- Check memory usage periodically
+    local currentTime = globals.RealTime()
+    if currentTime - Tasks.MemoryStats.lastCheck >= Tasks.MemoryStats.checkInterval then
+        Tasks.MemoryStats.lastCheck = currentTime
+        Tasks.MemoryStats.lastUsage = collectgarbage("count")
+        
+        -- If memory usage is too high, force a collection
+        if Tasks.MemoryStats.lastUsage > 40000 then -- 40MB
+            collectgarbage("collect")
+        end
+    end
     
     -- Check if we need to hide the window after completion
     if Tasks.completionTime > 0 then
@@ -76,43 +113,56 @@ function Tasks.Process()
     -- If we have a current task, resume it
     if Tasks.current then
         local co = Tasks.current.co
-        local success, result = pcall(coroutine.resume, co)
-
-        if not success then
-            -- Error occurred
-            print("[Database Fetcher] Error in task: " .. tostring(result))
-            Tasks.current = nil
-            Tasks.status = "error"
-            Tasks.message = "Error: " .. tostring(result)
-            -- Set completion time for timeout
-            Tasks.completionTime = globals.RealTime()
-        elseif coroutine.status(co) == "dead" then
-            -- Task completed
-            local completedTask = Tasks.current
-            Tasks.current = nil
-
-            -- Update progress
-            local totalTasks = #Tasks.queue
-            local completedTasks = totalTasks > 0 and (1 - totalTasks / (totalTasks + 1)) or 1
-            Tasks.progress = math.min(100, math.floor(completedTasks * 100))
-
-            -- Check if we're done with all tasks
-            if #Tasks.queue == 0 then
-                Tasks.status = "complete"
-                Tasks.message = "All tasks completed"
-                Tasks.progress = 100
+        
+        -- Check if coroutine is valid and alive
+        if coroutine.status(co) ~= "dead" then
+            -- Resume with error handling
+            local success, result = pcall(coroutine.resume, co)
+            
+            if not success then
+                -- Error occurred
+                print("[Database Fetcher] Error in task: " .. tostring(result))
+                Tasks.current = nil
+                Tasks.status = "error"
+                Tasks.message = "Error: " .. tostring(result)
+                
+                -- Force GC after an error to clean up
+                collectgarbage("collect")
                 
                 -- Set completion time for timeout
                 Tasks.completionTime = globals.RealTime()
+            elseif coroutine.status(co) == "dead" then
+                -- Task completed
+                local completedTask = Tasks.current
+                Tasks.current = nil
                 
-                -- Execute callback if one exists
-                local callbackToRun = Tasks.callback
-                if callbackToRun then
-                    -- Clear callback before running it to prevent issues
-                    Tasks.callback = nil
-                    callbackToRun(result)
+                -- Update progress
+                local totalTasks = #Tasks.queue
+                Tasks.progress = math.min(100, math.floor((1 - totalTasks / (totalTasks + 1)) * 100))
+                
+                -- Check if we're done with all tasks
+                if #Tasks.queue == 0 then
+                    Tasks.status = "complete"
+                    Tasks.message = "All tasks completed"
+                    Tasks.progress = 100
+                    
+                    -- Set completion time for timeout
+                    Tasks.completionTime = globals.RealTime()
+                    
+                    -- Execute callback if one exists
+                    if type(Tasks.callback) == "function" then
+                        local callbackToRun = Tasks.callback
+                        Tasks.callback = nil -- Clear callback before running
+                        pcall(callbackToRun, result) -- Run with error handling
+                    end
+                    
+                    -- Force GC after completion
+                    collectgarbage("collect")
                 end
             end
+        else
+            -- Coroutine is already dead, move on
+            Tasks.current = nil
         end
     end
 end

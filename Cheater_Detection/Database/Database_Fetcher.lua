@@ -26,7 +26,9 @@ local Fetcher = {
         LastAutoFetch = 0,             -- Timestamp of last auto-fetch
         ProcessOneSourceAtTime = true, -- Process one source at a time (recommended)
         SourceDelay = 5,               -- Seconds to wait between sources
-        BatchSize = 500                -- Lines to process in each batch
+        BatchSize = 200,               -- REDUCED: Lines to process in each batch (was 500)
+        DebugMode = false,             -- NEW: Enable debug output
+        EmergencyMemoryLimit = 60000   -- NEW: Memory limit in KB (60MB) for emergency cleanup
     },
     
     -- State
@@ -48,6 +50,7 @@ function Fetcher.ApplyConfig()
     -- Apply fetcher config to parser config
     Parsers.Config.BatchSize = Fetcher.Config.BatchSize
     Parsers.Config.SourceDelay = Fetcher.Config.SourceDelay * 1000 -- Convert to milliseconds
+    Parsers.Config.DebugMode = Fetcher.Config.DebugMode
 end
 
 -- Non-coroutine fetch wrapper function for compatibility with existing code
@@ -126,28 +129,81 @@ function Fetcher.FetchAll(database, callback, silent)
     return true
 end
 
+-- Emergency memory cleanup function
+function Fetcher.EmergencyCleanup()
+    -- Reset the task system
+    Tasks.Reset()
+    
+    -- Force multiple garbage collections
+    collectgarbage("stop")
+    collectgarbage("collect")
+    collectgarbage("collect")
+    collectgarbage("restart")
+    
+    -- Print warning
+    print("[Database Fetcher] EMERGENCY MEMORY CLEANUP PERFORMED")
+    
+    -- Return to initial state
+    Fetcher.State.currentSourceIndex = 0
+    Fetcher.State.totalSources = 0
+    Fetcher.State.totalAdded = 0
+    Fetcher.State.processingComplete = false
+    
+    return false
+end
+
 -- Process the next source in the list
 function Fetcher.ProcessNextSource(database)
+    -- Check memory usage and perform emergency cleanup if needed
+    local memUsage = collectgarbage("count")
+    if memUsage > Fetcher.Config.EmergencyMemoryLimit then
+        Tasks.message = "Emergency cleanup: Memory usage exceeded limit!"
+        coroutine.yield() -- Show message before cleanup
+        return Fetcher.EmergencyCleanup()
+    end
+    
     Fetcher.State.currentSourceIndex = Fetcher.State.currentSourceIndex + 1
-
+    
     if Fetcher.State.currentSourceIndex > Fetcher.State.totalSources then
         Fetcher.State.processingComplete = true
         Tasks.message = "Processing complete! Added " .. Fetcher.State.totalAdded .. " entries."
+        
+        -- Force GC before finishing
+        collectgarbage("collect")
         return Fetcher.State.totalAdded
     end
-
+    
     local source = Fetcher.Sources[Fetcher.State.currentSourceIndex]
     Tasks.message = "Fetching " .. source.name
-
+    
+    -- Force GC before starting a new source
+    collectgarbage("collect")
+    coroutine.yield()
+    
+    -- Process with memory checks between operations
     local count = Parsers.CoFetchSource(source, database)
     Fetcher.State.totalAdded = Fetcher.State.totalAdded + count
-
+    
+    -- Yield to let the game breathe
+    coroutine.yield()
+    
+    -- GC before scheduling next source
+    collectgarbage("collect")
+    
     if Fetcher.State.currentSourceIndex < Fetcher.State.totalSources then
+        -- Schedule next source with delay
         Tasks.Add(function()
+            -- Check memory before continuing
+            if collectgarbage("count") > Fetcher.Config.EmergencyMemoryLimit then
+                Tasks.message = "Emergency cleanup before next source!"
+                coroutine.yield()
+                return Fetcher.EmergencyCleanup()
+            end
+            
             return Fetcher.ProcessNextSource(database)
         end, "Waiting for next source", Fetcher.Config.SourceDelay)
     end
-
+    
     return count
 end
 
@@ -344,11 +400,18 @@ end
 local function OnDraw()
     -- Always process tasks if we're running
     if Tasks.isRunning then
-        Tasks.Process()
-
-        -- Draw progress indicator if enabled and not in silent mode
+        -- Process with lightweight memory monitoring
+        local success, err = pcall(Tasks.Process)
+        
+        -- Handle any errors in processing
+        if not success then
+            print("[Database Fetcher] Error in task processing: " .. tostring(err))
+            Fetcher.EmergencyCleanup()
+            return
+        end
+        
+        -- Draw progress indicator if enabled and needed
         if Fetcher.Config.ShowProgressBar and not Tasks.silent and Tasks.status ~= "idle" then
-            -- Use the built-in draw progress UI function
             Tasks.DrawProgressUI()
         end
     end
