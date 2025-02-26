@@ -230,6 +230,25 @@ function Common.FromSteamid32To64(steamid32)
     return "[U:1:" .. steamid32 .. "]"
 end
 
+-- More robust SteamID conversion functions
+function Common.SteamID3ToSteamID64(steamID3)
+    if not steamID3 then return nil end
+    
+    -- Try to extract the numeric part from [U:1:12345]
+    local accountID = steamID3:match("%[U:1:(%d+)%]")
+    if not accountID then return nil end
+    
+    -- Safe steam API conversion with error handling
+    local success, steamID64 = pcall(steam.ToSteamID64, steamID3)
+    if success and steamID64 and #steamID64 == 17 then
+        return steamID64
+    end
+    
+    -- Fallback manual conversion if steam API fails
+    -- SteamID64 = 76561197960265728 + accountID
+    return tostring(76561197960265728 + tonumber(accountID))
+end
+
 -- Helper function to determine if the content is JSON
 function Common.isJson(content)
     local firstChar = content:sub(1, 1)

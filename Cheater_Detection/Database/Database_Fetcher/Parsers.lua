@@ -10,21 +10,23 @@ Parsers.Config = {
     RetryBackoff = 2,      -- Multiply delay by this factor on each retry
     RateLimitDelay = 2000, -- Milliseconds to wait between requests (2 seconds)
     RequestTimeout = 10,   -- Maximum time to wait for a response (seconds)
-    BatchSize = 100,       -- REDUCED FURTHER: Smaller batch size (was 200)
+    BatchSize = 50,        -- REDUCED FURTHER: Even smaller batch size (was 100)
     SourceDelay = 5000,    -- Milliseconds to wait between sources (5 seconds)
-    YieldFrequency = 10,   -- REDUCED: More frequent yields (was 20)
-    UseWeakTables = true   -- NEW: Use weak tables for temporary data
+    YieldFrequency = 5,    -- REDUCED FURTHER: Much more frequent yields (was 10)
+    UseWeakTables = true,  -- NEW: Use weak tables for temporary data
+    JsonBatchSize = 10,    -- REDUCED FURTHER: Ultra-small batch size for JSON processing (was 25)
+    JsonYieldFrequency = 3 -- REDUCED FURTHER: Even more frequent yields for JSON (was 5)
 }
 
 -- Memory management helpers
 Parsers.Memory = {
     lastGC = 0,                -- Last garbage collection time
-    gcInterval = 2,            -- REDUCED: Seconds between forced garbage collections (was 3)
-    memoryThreshold = 25000,   -- REDUCED: KB threshold to trigger extra GC (was 50MB)
-    emergencyThreshold = 40000 -- NEW: Emergency cleanup threshold
+    gcInterval = 7,            -- REDUCED: Seconds between forced garbage collections (was 3)
+    memoryThreshold = 2000,   -- REDUCED: KB threshold to trigger extra GC (was 50MB)
+    emergencyThreshold = 3000 -- NEW: Emergency cleanup threshold
 }
 
--- More aggressive garbage collection with better handling
+-- More balanced garbage collection with incremental approach
 function Parsers.ForceGarbageCollection(immediate)
     local currentTime = globals.RealTime()
     local memUsage = collectgarbage("count")
@@ -48,14 +50,16 @@ function Parsers.ForceGarbageCollection(immediate)
         -- Set temporary tables to nil to help GC
         Parsers._tempData = nil
 
-        -- Force a complete garbage collection cycle - multiple passes
-        collectgarbage("stop")      -- Disable automatic collection
-        collectgarbage("collect")   -- First pass
-        Tasks.Sleep(50)             -- Yield to let system process
-        collectgarbage("collect")   -- Second pass
-        Tasks.Sleep(50)             -- Yield again
-        collectgarbage("collect")   -- Third pass for good measure
-        collectgarbage("restart")   -- Re-enable automatic collection
+        -- Use incremental GC instead of stop/restart approach
+        for i = 1, 10 do  -- Run several steps for thorough collection
+            collectgarbage("step", 100)  -- Collect in smaller steps
+            if i % 3 == 0 then  -- Yield occasionally during collection
+                coroutine.yield()
+            end
+        end
+        
+        -- Finish with one full collection for completeness
+        collectgarbage("collect")
 
         -- Update last GC time
         Parsers.Memory.lastGC = currentTime
@@ -168,88 +172,131 @@ function Parsers.CoDownloadList(url, filename)
     return true
 end
 
--- Optimized CoParseBatch function to prevent ruRBtree overflow
+-- Improved SteamID converter that uses direct API call for all formats
+function Parsers.ConvertToSteamID64(steamid)
+    if not steamid then return nil end
+    
+    -- If already a SteamID64, just return it
+    if steamid:match("^%d+$") and #steamid == 17 then
+        return steamid
+    end
+    
+    -- Try direct conversion for all formats
+    local success, result = pcall(steam.ToSteamID64, steamid)
+    if success and result and #result == 17 then
+        return result
+    end
+    
+    -- Fallback for SteamID3 format if the API call fails
+    if steamid:match("^%[U:1:%d+%]$") then
+        local accountID = steamid:match("%[U:1:(%d+)%]")
+        if accountID then
+            return tostring(76561197960265728 + tonumber(accountID))
+        end
+    end
+    
+    return nil
+end
+
+-- Ultra-optimized batch processing for raw ID lists
 function Parsers.CoParseBatch(content, database, sourceName, sourceCause)
     local count = 0
     local linesProcessed = 0
     local duplicateSkipped = 0
-    local LINES_PER_BATCH = Parsers.Config.BatchSize      -- Reduced batch size
-    local YIELD_FREQUENCY = Parsers.Config.YieldFrequency -- More frequent yields
-
+    
+    -- Use reduced batch sizes to prevent lag
+    local LINES_PER_BATCH = Parsers.Config.BatchSize      
+    local YIELD_FREQUENCY = Parsers.Config.YieldFrequency
+    
     -- Process directly without creating tables of lines
     Tasks.message = "Processing " .. sourceName .. "..."
     coroutine.yield()
-
-    -- Count total lines first
+    
+    -- Count total lines first - use a weak table for line counting
     local totalLines = 0
-    for _ in content:gmatch("[^\r\n]+") do
-        totalLines = totalLines + 1
-        -- Yield every 1000 lines while counting to prevent freezing
-        if totalLines % 1000 == 0 then
-            coroutine.yield()
-        end
-    end
-
-    -- Process in smaller chunks
-    local currentBatch = 0
-    local linesInCurrentBatch = 0
-    local lineCount = 0
-
-    -- Process line by line to avoid storing all lines in memory
-    for line in content:gmatch("[^\r\n]+") do
-        lineCount = lineCount + 1
-        linesProcessed = linesProcessed + 1
-
-        -- Trim whitespace directly
-        line = line:match("^%s*(.-)%s*$")
-
-        -- Skip comments and empty lines
-        if line ~= "" and not line:match("^%-%-") and not line:match("^#") then
-            -- Check if it's a valid SteamID64 (should be a 17-digit number)
-            if line:match("^%d+$") and #line == 17 then
-                local steamID64 = line
-
-                -- Use direct index lookups
-                if not database.content[steamID64] then
-                    -- Only add if not already in database - minimal data structure
-                    database.content[steamID64] = {
-                        Name = "Unknown",
-                        proof = sourceCause
-                    }
-                    
-                    -- Set player priority
-                    playerlist.SetPriority(steamID64, 10)
-                    count = count + 1
-                else
-                    duplicateSkipped = duplicateSkipped + 1
-                end
+    do
+        -- Local scope to help garbage collection
+        for _ in content:gmatch("[^\r\n]+") do
+            totalLines = totalLines + 1
+            -- Much more frequent yields while counting
+            if totalLines % 500 == 0 then
+                coroutine.yield()
             end
         end
-
+    end
+    
+    -- Setup progress tracking for this source
+    Tasks.SetupSourceBatches({name = sourceName}, totalLines, LINES_PER_BATCH)
+    
+    -- Process in smaller chunks with weak tables for each batch
+    local currentBatch = 0
+    local linesInCurrentBatch = 0
+    local batchCount = math.ceil(totalLines / LINES_PER_BATCH)
+    
+    -- Create a weak table for temporary storage
+    local weakBatch = setmetatable({}, {__mode = "v"})
+    
+    -- Process line by line to avoid storing all lines in memory
+    for line in content:gmatch("[^\r\n]+") do
+        linesProcessed = linesProcessed + 1
+        
+        -- Trim whitespace directly
+        line = line:match("^%s*(.-)%s*$")
+        
+        -- Skip comments and empty lines
+        if line ~= "" and not line:match("^%-%-") and not line:match("^#") then
+            -- Check if it's a valid SteamID64 or can be converted
+            local steamID64 = line
+            
+            -- Convert if needed using optimized function
+            if not (line:match("^%d+$") and #line == 17) then
+                steamID64 = Parsers.ConvertToSteamID64(line)
+            end
+            
+            -- Add to database if valid
+            if steamID64 and not database.content[steamID64] then
+                -- Only add if not already in database - minimal data structure
+                database.content[steamID64] = {
+                    Name = "Unknown",
+                    proof = sourceCause
+                }
+                
+                -- Set player priority
+                playerlist.SetPriority(steamID64, 10)
+                count = count + 1
+            else
+                duplicateSkipped = duplicateSkipped + 1
+            end
+        end
+        
         -- Clear the line variable to help GC
         line = nil
-
+        
         linesInCurrentBatch = linesInCurrentBatch + 1
-
-        -- Yield much more frequently to prevent ruRBtree overflow
+        
+        -- FIX: Changed linesProcessedInBatch to linesInCurrentBatch
         if linesInCurrentBatch % YIELD_FREQUENCY == 0 then
             coroutine.yield()
         end
-
+        
         -- After processing a batch, perform garbage collection
         if linesInCurrentBatch >= LINES_PER_BATCH then
             currentBatch = currentBatch + 1
-
+            
+            -- Update batch completion for progress tracking
+            Tasks.BatchCompleted()
+            
             -- Update progress message and yield
-            Tasks.message = string.format("Processing %s... %d/%d lines (%d added, %d skipped)",
-                sourceName, linesProcessed, totalLines, count, duplicateSkipped)
-
+            Tasks.message = string.format("Processing %s... batch %d/%d (%d added, %d skipped)",
+                sourceName, currentBatch, batchCount, count, duplicateSkipped)
+            
             -- Force GC after each batch - very aggressive
             Parsers.ForceGarbageCollection(true)
-
-            -- Reset batch counter
+            
+            -- Reset batch counter and clear weak batch table
             linesInCurrentBatch = 0
-
+            for k in pairs(weakBatch) do weakBatch[k] = nil end
+            
             -- Important yield point to prevent ruRBtree overflow
             coroutine.yield()
             
@@ -257,25 +304,26 @@ function Parsers.CoParseBatch(content, database, sourceName, sourceCause)
             collectgarbage("collect")
         end
     end
-
+    
     -- Final progress update
     Tasks.message = string.format("Finished %s: %d added, %d skipped",
         sourceName, count, duplicateSkipped)
-
-    -- Final cleanup
+    
+    -- Mark source as completed for progress tracking
+    Tasks.SourceCompleted()
+    
+    -- Final cleanup - use weak tables for all temporary data
     content = nil -- Clear the content reference
     Parsers.ForceGarbageCollection(true)
     
     -- Set all locals to nil explicitly
+    weakBatch = nil
     totalLines = nil
     currentBatch = nil
     linesInCurrentBatch = nil
-    lineCount = nil
     linesProcessed = nil
     duplicateSkipped = nil
-    LINES_PER_BATCH = nil
-    YIELD_FREQUENCY = nil
-
+    
     return count
 end
 
@@ -360,6 +408,173 @@ function Parsers.ParseTF2DB(content, database, sourceName, sourceCause)
     return count
 end
 
+-- Optimized TF2DB JSON parser using string manipulation
+function Parsers.CoFetchTF2DB(content, database, source)
+    -- Direct string parser for TF2DB format - no JSON decode to avoid memory issues
+    Tasks.message = "Parsing TF2DB data from " .. source.name
+    coroutine.yield()
+    
+    -- Initialize parsing state using weak tables
+    local contentLength = #content
+    local count = 0
+    
+    -- Use smaller scope to help garbage collection
+    do
+        -- First do a quick count of players for progress tracking
+        Tasks.message = "Counting entries in " .. source.name
+        local playerCount = 0
+        for _ in content:gmatch('"steamid":%s*"') do
+            playerCount = playerCount + 1
+            -- Yield occasionally while counting
+            if playerCount % 50 == 0 then
+                coroutine.yield()
+            end
+        end
+        
+        -- Report the number of players found
+        Tasks.message = "Found " .. playerCount .. " entries in " .. source.name
+        coroutine.yield()
+        
+        -- Setup progress tracking for this source
+        Tasks.SetupSourceBatches(source, playerCount, Parsers.Config.JsonBatchSize)
+        
+        -- Process in very small batches with proper progress tracking
+        local batchSize = Parsers.Config.JsonBatchSize
+        local processedCount = 0
+        local currentBatch = 0
+        local batchCount = math.ceil(playerCount / batchSize)
+        local playersInBatch = 0
+        
+        -- Create weak tables for temporary storage
+        local weakData = setmetatable({}, {__mode = "v"})
+        
+        -- State variables for parsing
+        local currentIndex = 1
+        
+        -- Continue until we reach the end of the content
+        while currentIndex < contentLength do
+            -- Find next player entry
+            local steamIDStart = content:find('"steamid":%s*"', currentIndex)
+            
+            -- If no more players found, exit loop
+            if not steamIDStart then
+                break
+            end
+            
+            -- Move current index forward
+            currentIndex = steamIDStart + 10
+            
+            -- Extract steamid
+            local steamIDEnd = content:find('"', currentIndex)
+            if not steamIDEnd then
+                break -- Malformed JSON, exit
+            end
+            
+            local steamID = content:sub(currentIndex, steamIDEnd - 1)
+            currentIndex = steamIDEnd + 1
+            
+            -- Variables for this player - use local scope only, no globals
+            local playerName = "Unknown"
+            local playerProof = source.cause
+            
+            -- Look for player_name
+            local nameStart = content:find('"player_name":%s*"', currentIndex)
+            if nameStart and nameStart < (content:find('"steamid":%s*"', currentIndex + 1) or contentLength) then
+                currentIndex = nameStart + 14
+                local nameEnd = content:find('"', currentIndex)
+                if nameEnd then
+                    playerName = content:sub(currentIndex, nameEnd - 1)
+                    currentIndex = nameEnd + 1
+                end
+            end
+            
+            -- Look for proof
+            local proofStart = content:find('"proof":%s*%[', currentIndex)
+            if proofStart and proofStart < (content:find('"steamid":%s*"', currentIndex + 1) or contentLength) then
+                currentIndex = proofStart + 9
+                local proofEnd = content:find('%]', currentIndex)
+                if proofEnd then
+                    local proofStr = content:sub(currentIndex, proofEnd - 1)
+                    -- Extract the first proof string (usually there's only one)
+                    local singleProof = proofStr:match('"([^"]+)"')
+                    if singleProof then
+                        playerProof = singleProof
+                    end
+                    currentIndex = proofEnd + 1
+                end
+            end
+            
+            -- Convert SteamID3 to SteamID64 using optimized function
+            local steamID64 = Parsers.ConvertToSteamID64(steamID)
+            
+            -- Add to database if conversion was successful
+            if steamID64 and not database.content[steamID64] then
+                database.content[steamID64] = {
+                    Name = playerName,
+                    proof = playerProof
+                }
+                
+                playerlist.SetPriority(steamID64, 10)
+                count = count + 1
+            end
+            
+            -- Update processed count for progress tracking
+            processedCount = processedCount + 1
+            playersInBatch = playersInBatch + 1
+            
+            -- Ultra-frequent yields during JSON processing
+            if processedCount % Parsers.Config.JsonYieldFrequency == 0 then
+                coroutine.yield()
+            end
+            
+            -- Every batch, force GC and update display
+            if playersInBatch >= batchSize then
+                currentBatch = currentBatch + 1
+                
+                -- Update batch completion for progress tracking
+                Tasks.BatchCompleted()
+                
+                Tasks.message = string.format("Processing %s... Batch %d/%d (%d entries added)",
+                    source.name, currentBatch, batchCount, count)
+                
+                -- Clear temporary data
+                for k in pairs(weakData) do weakData[k] = nil end
+                steamID = nil
+                playerName = nil
+                playerProof = nil
+                steamID64 = nil
+                
+                -- Force GC and yield
+                Parsers.ForceGarbageCollection(true)
+                playersInBatch = 0
+                coroutine.yield()
+                collectgarbage("collect")
+            end
+        end
+        
+        -- Clear all local variables to help GC
+        weakData = nil
+        currentIndex = nil
+        batchSize = nil
+        processedCount = nil
+        currentBatch = nil
+        batchCount = nil
+        playersInBatch = nil
+    end
+    
+    -- Mark source as completed for progress tracking
+    Tasks.SourceCompleted()
+    
+    -- Cleanup with incremental approach
+    content = nil
+    for i = 1, 3 do
+        collectgarbage("step", 200)
+        coroutine.yield()
+    end
+    
+    return count
+end
+
 -- Optimized fetching to prevent memory issues
 function Parsers.CoFetchSource(source, database)
     if not source or not source.url or not source.parser or not source.cause then
@@ -392,113 +607,110 @@ function Parsers.CoFetchSource(source, database)
     local count = 0
 
     if source.parser == "raw" then
-        -- Process raw list with optimized batch processing
+        -- Process raw list with ultra-optimized batch processing
+        Tasks.message = "Processing raw list from " .. source.name
         count = Parsers.CoParseBatch(content, database, source.name, source.cause)
 
         -- Important: Clear content reference to free memory immediately
         content = nil
         collectgarbage("collect")
     elseif source.parser == "tf2db" then
-        -- For JSON content, process differently to avoid memory issues
-        Tasks.message = "Parsing JSON data from " .. source.name
-        coroutine.yield()
+        -- Use completely rewritten TF2DB parser
+        count = Parsers.CoFetchTF2DB(content, database, source)
+    end
 
-        -- Use weak table for JSON data
-        local weakData = Tasks.CreateWeakTable()
+    -- Wait a bit after processing to stabilize game before next source
+    Tasks.message = "Finished processing " .. source.name .. " (added " .. count .. " entries)"
+    Tasks.Sleep(500)
 
-        -- Parse JSON in a pcall with immediate cleanup
-        local success = pcall(function()
-            -- Parse JSON into weak table
-            weakData.result = Json.decode(content)
-            
-            -- Immediately clear the content to free memory
-            content = nil
-            collectgarbage("collect")
-        end)
+    -- Run incremental GC instead of multiple full passes
+    Parsers.ForceGarbageCollection(true)
+    Tasks.Sleep(100)
+    collectgarbage("step", 200) -- More gentle approach
 
-        -- Force GC after JSON parsing
-        Parsers.ForceGarbageCollection(true)
+    print(string.format("[Database Fetcher] Added %d entries from %s", count, source.name))
 
-        -- Process data if successful, using local variables to minimize table lookups
-        if success and weakData.result and weakData.result.players then
-            local players = weakData.result.players
-            local playerCount = #players
-            weakData.result = nil -- Clear reference to help GC
-            
-            -- Process in smaller batches
-            local batchSize = math.min(Parsers.Config.BatchSize, 50) -- Even smaller batches for JSON
-            for i = 1, playerCount, batchSize do
-                local batchEnd = math.min(i + batchSize - 1, playerCount)
-                Tasks.message = "Processing " .. source.name .. "... batch " ..
-                    math.ceil(i / batchSize) .. "/" .. math.ceil(playerCount / batchSize)
+    -- Return value, all other locals should be cleared
+    local result = count
+    count = nil
+    return result
+end
 
-                local batchCount = 0
+-- Sync fetch function for direct calls
+function Parsers.FetchSource(source, database)
+    if not source or not source.url or not source.parser or not source.cause then
+        print("[Database Fetcher] Invalid source configuration")
+        return 0
+    end
 
-                -- Process this batch
-                for j = i, batchEnd do
-                    -- Yield very frequently
-                    if (j - i) % (Parsers.Config.YieldFrequency / 2) == 0 then
-                        coroutine.yield()
+    -- Initial cleanup before starting new source
+    Parsers.ForceGarbageCollection(true)
+
+    Tasks.message = "Preparing to fetch from " .. source.name .. "..."
+    Tasks.Sleep(Parsers.Config.SourceDelay)
+
+    Tasks.message = "Fetching from " .. source.name .. "..."
+    local content = Parsers.CoGet(source.url)
+
+    if not content or #content == 0 then
+        print("[Database Fetcher] Failed to fetch from " .. source.name)
+        return 0
+    end
+
+    -- GC before parsing
+    Parsers.ForceGarbageCollection(true)
+
+    -- Parse the content based on the specified parser
+    local count = 0
+
+    if source.parser == "raw" then
+        -- Process raw list with optimized batch processing
+        count = Parsers.ParseRawIDList(content, database, source.name, source.cause)
+
+        -- Important: Clear content reference to free memory immediately
+        content = nil
+        collectgarbage("collect")
+    elseif source.parser == "tf2db" then
+        -- Don't even try to parse the full JSON - just extract steamIDs directly
+        local count = 0
+
+        -- Direct string search for steamIDs
+        local i = 1
+        while i < #content do
+            if content:sub(i, i + 10) == '"steamid":"' then
+                -- Found start of steamID - extract it
+                local endPos = content:find('"', i + 11)
+                if endPos then
+                    local steamid = content:sub(i + 11, endPos - 1)
+
+                    -- Convert to SteamID64 if needed
+                    local steamID64
+                    if steamid:match("^%[U:1:%d+%]$") then
+                        steamID64 = steam.ToSteamID64(steamid)
+                    elseif steamid:match("STEAM_0:%d:%d+") then
+                        steamID64 = steam.ToSteamID64(steamid)
+                    elseif steamid:match("^%d+$") and #steamid == 17 then
+                        steamID64 = steamid -- Already SteamID64
                     end
 
-                    -- Extract player to local variable to minimize table lookups
-                    local player = players[j]
-                    if player and player.steamid then
-                        local steamID64
-                        local steamid = player.steamid -- Local copy to avoid table lookup
+                    -- Process this steamID
+                    if steamID64 and not database.content[steamID64] then
+                        database.content[steamID64] = {
+                            Name = "Unknown",
+                            proof = source.cause
+                        }
 
-                        -- Convert to SteamID64 if needed
-                        if steamid:match("^%[U:1:%d+%]$") then
-                            steamID64 = steam.ToSteamID64(steamid)
-                        elseif steamid:match("STEAM_0:%d:%d+") then
-                            steamID64 = steam.ToSteamID64(steamid)
-                        elseif steamid:match("^%d+$") and #steamid == 17 then
-                            steamID64 = steamid -- Already SteamID64
-                        end
-
-                        -- Clear locals to help GC
-                        steamid = nil
-
-                        if steamID64 and not database.content[steamID64] then
-                            database.content[steamID64] = {
-                                Name = "Unknown",
-                                proof = source.cause
-                            }
-
-                            playerlist.SetPriority(steamID64, 10)
-                            count = count + 1
-                            batchCount = batchCount + 1
-                        end
-                        
-                        -- Clear steamID64 to help GC
-                        steamID64 = nil
+                        playerlist.SetPriority(steamID64, 10)
+                        count = count + 1
                     end
-                    
-                    -- Clear player to help GC
-                    player = nil
+
+                    i = endPos
                 end
-
-                -- After processing a batch, force GC
-                Tasks.message = "Processed " .. math.min(batchEnd, playerCount) .. "/" .. playerCount ..
-                    " players (" .. count .. " added this batch: " .. batchCount .. ")"
-
-                -- Force GC, yield, and run GC again
-                Parsers.ForceGarbageCollection(true)
-                coroutine.yield()
-                collectgarbage("collect")
-                
-                -- Clear local variables to help GC
-                batchCount = nil
             end
-
-            -- Clear all references to players
-            players = nil
-        else
-            print("[Database Fetcher] Failed to parse TF2DB format JSON from " .. source.name)
+            i = i + 1
         end
-        
-        -- Clear weakData reference
-        weakData = nil
+
+        return count
     end
 
     -- Wait a bit after processing to stabilize game before next source
@@ -511,7 +723,7 @@ function Parsers.CoFetchSource(source, database)
     collectgarbage("collect")
 
     print(string.format("[Database Fetcher] Added %d entries from %s", count, source.name))
-    
+
     -- Return value, all other locals should be cleared
     local result = count
     count = nil

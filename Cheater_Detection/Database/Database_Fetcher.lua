@@ -25,13 +25,15 @@ local Fetcher = {
         AutoFetchInterval = 0,         -- Time in minutes between auto-fetches (0 = disabled)
         LastAutoFetch = 0,             -- Timestamp of last auto-fetch
         ProcessOneSourceAtTime = true, -- Process one source at a time (recommended)
-        SourceDelay = 7,               -- INCREASED: Seconds to wait between sources (was 5)
-        BatchSize = 100,               -- REDUCED FURTHER: Lines to process in each batch (was 200)
+        SourceDelay = 12,              -- INCREASED: Even more delay between sources (was 10)
+        BatchSize = 50,                -- REDUCED: Smaller batch size (was 100)
+        JsonBatchSize = 10,            -- REDUCED: Much smaller JSON batch size (was 25)
         DebugMode = false,             -- Enable debug output
-        EmergencyMemoryLimit = 50000,  -- REDUCED: Memory limit in KB (50MB) for emergency cleanup
-        YieldFrequency = 10            -- NEW: Override yield frequency
+        EmergencyMemoryLimit = 40000,  -- REDUCED: Lower memory limit (was 50000)
+        YieldFrequency = 5,            -- REDUCED: More frequent yields (was 10)
+        JsonYieldFrequency = 3         -- REDUCED: Much more frequent JSON yields (was 5)
     },
-    
+
     -- State
     State = {
         currentSourceIndex = 0,
@@ -50,9 +52,11 @@ Fetcher.Parsers = Parsers
 function Fetcher.ApplyConfig()
     -- Apply fetcher config to parser config
     Parsers.Config.BatchSize = Fetcher.Config.BatchSize
+    Parsers.Config.JsonBatchSize = Fetcher.Config.JsonBatchSize
     Parsers.Config.SourceDelay = Fetcher.Config.SourceDelay * 1000 -- Convert to milliseconds
     Parsers.Config.DebugMode = Fetcher.Config.DebugMode
     Parsers.Config.YieldFrequency = Fetcher.Config.YieldFrequency
+    Parsers.Config.JsonYieldFrequency = Fetcher.Config.JsonYieldFrequency
 end
 
 -- Non-coroutine fetch wrapper function for compatibility with existing code
@@ -76,20 +80,20 @@ function Fetcher.FetchAll(database, callback, silent)
         end
         return false
     end
-    
+
     -- Apply configuration
     Fetcher.ApplyConfig()
-    
+
     -- Initialize
     database = database or {}
     database.content = database.content or {}
-    
+
     -- Reset state
     Fetcher.State.currentSourceIndex = 0
     Fetcher.State.totalSources = #Fetcher.Sources
     Fetcher.State.totalAdded = 0
     Fetcher.State.processingComplete = false
-    
+
     -- Clear any existing tasks
     Tasks.Reset()
     Tasks.callback = callback
@@ -99,15 +103,18 @@ function Fetcher.FetchAll(database, callback, silent)
     Tasks.message = "Preparing to fetch sources..."
     Tasks.silent = silent or false
     Tasks.smoothProgress = 0
-    
+
+    -- Initialize progress tracking with correct source count
+    Tasks.InitProgressTracking(#Fetcher.Sources)
+
     -- If processing one source at a time
     if Fetcher.Config.ProcessOneSourceAtTime then
         -- Add task to process the next source with source tracking
         Tasks.Add(
             function()
                 return Fetcher.ProcessNextSource(database)
-            end, 
-            "Starting fetch process", 
+            end,
+            "Starting fetch process",
             1,
             { isSource = true } -- Mark this as a source task for progress tracking
         )
@@ -119,8 +126,8 @@ function Fetcher.FetchAll(database, callback, silent)
                     local count = Parsers.CoFetchSource(source, database)
                     Fetcher.State.totalAdded = Fetcher.State.totalAdded + count
                     return count
-                end, 
-                "Fetching " .. source.name, 
+                end,
+                "Fetching " .. source.name,
                 1,
                 { isSource = true } -- Mark as source task for progress tracking
             )
@@ -145,24 +152,25 @@ end
 function Fetcher.EmergencyCleanup()
     -- Reset the task system
     Tasks.Reset()
-    
+
     -- Force multiple garbage collections
     collectgarbage("stop")
     collectgarbage("collect")
-    Tasks.Sleep(100) -- Give time for GC to work
+    Tasks.Sleep(200) -- INCREASED: Give more time for GC to work
     collectgarbage("collect")
+    Tasks.Sleep(100)
     collectgarbage("collect")
     collectgarbage("restart")
-    
+
     -- Print warning
     print("[Database Fetcher] EMERGENCY MEMORY CLEANUP PERFORMED")
-    
+
     -- Return to initial state
     Fetcher.State.currentSourceIndex = 0
     Fetcher.State.totalSources = 0
     Fetcher.State.totalAdded = 0
     Fetcher.State.processingComplete = false
-    
+
     return false
 end
 
@@ -175,40 +183,54 @@ function Fetcher.ProcessNextSource(database)
         coroutine.yield() -- Show message before cleanup
         return Fetcher.EmergencyCleanup()
     end
-    
+
     Fetcher.State.currentSourceIndex = Fetcher.State.currentSourceIndex + 1
-    
+
     if Fetcher.State.currentSourceIndex > Fetcher.State.totalSources then
         Fetcher.State.processingComplete = true
         Tasks.message = "Processing complete! Added " .. Fetcher.State.totalAdded .. " entries."
-        
+
         -- Force multiple GC before finishing
         collectgarbage("stop")
         collectgarbage("collect")
         Tasks.Sleep(100)
         collectgarbage("collect")
         collectgarbage("restart")
-        
+
         return Fetcher.State.totalAdded
     end
-    
+
     local source = Fetcher.Sources[Fetcher.State.currentSourceIndex]
     Tasks.message = "Fetching " .. source.name
-    
+
     -- Force GC before starting a new source
     collectgarbage("collect")
     coroutine.yield()
-    
+
+    -- Initialize tracking for this source
+    Tasks.TaskTracking.sourceProgress = 0
+
     -- Process with memory checks between operations
     local count = Parsers.CoFetchSource(source, database)
     Fetcher.State.totalAdded = Fetcher.State.totalAdded + count
-    
+
+    -- Update progress to 100% for this source
+    Tasks.UpdateProgress(
+        Fetcher.State.currentSourceIndex,
+        Fetcher.State.totalSources,
+        100, -- Complete
+        100  -- Total
+    )
+
+    -- After processing, mark source as completed for accurate progress tracking
+    Tasks.SourceCompleted()
+
     -- Yield to let the game breathe
     coroutine.yield()
-    
+
     -- GC before scheduling next source
     collectgarbage("collect")
-    
+
     if Fetcher.State.currentSourceIndex < Fetcher.State.totalSources then
         -- Schedule next source with delay and source tracking for percentages
         Tasks.Add(
@@ -219,20 +241,20 @@ function Fetcher.ProcessNextSource(database)
                     coroutine.yield()
                     return Fetcher.EmergencyCleanup()
                 end
-                
+
                 return Fetcher.ProcessNextSource(database)
-            end, 
-            "Waiting for next source", 
+            end,
+            "Waiting for next source",
             Fetcher.Config.SourceDelay,
             { isSource = true } -- Mark this as a source task for progress tracking
         )
     end
-    
+
     -- Clear local variables to help GC
     source = nil
     count = nil
     memUsage = nil
-    
+
     return Fetcher.State.totalAdded
 end
 
@@ -240,33 +262,33 @@ end
 function Fetcher.AutoFetch(database)
     -- Set silent mode based on config
     local silent = not Fetcher.Config.ShowProgressBar
-    
+
     -- Get database reference if not provided
     if not database then
         local success, db = pcall(function()
             return require("Cheater_Detection.Database.Database")
         end)
-        
+
         if not success or not db then
             return false
         end
-        
+
         database = db
     end
-    
+
     -- Reset task system completely before starting new fetch
     Tasks.Reset()
-    
+
     -- Start fetch with appropriate silent mode
     return Fetcher.FetchAll(database, function(totalAdded)
         if totalAdded > 0 and Fetcher.Config.AutoSaveAfterFetch then
             database.SaveDatabase()
-            
+
             if Fetcher.Config.NotifyOnFetchComplete then
                 printc(80, 200, 120, 255, "[Database] Auto-updated with " .. totalAdded .. " new entries")
             end
         end
-        
+
         -- Update last fetch time
         Fetcher.Config.LastAutoFetch = os.time()
     end, silent)
@@ -330,7 +352,7 @@ local function RegisterCommands()
             print("[Database Fetcher] A fetch operation is already in progress")
         end
     end, "Fetch all cheater lists and update the database")
-    
+
     -- Auto fetch toggle command
     Commands.Register("cd_autofetch", function(args)
         if #args >= 1 then
@@ -345,10 +367,11 @@ local function RegisterCommands()
         else
             -- Toggle mode
             Fetcher.Config.AutoFetchOnLoad = not Fetcher.Config.AutoFetchOnLoad
-            print("[Database Fetcher] Auto-fetch on load: " .. (Fetcher.Config.AutoFetchOnLoad and "ENABLED" or "DISABLED"))
+            print("[Database Fetcher] Auto-fetch on load: " ..
+            (Fetcher.Config.AutoFetchOnLoad and "ENABLED" or "DISABLED"))
         end
     end, "Toggle auto-fetch on script load")
-    
+
     -- Set update interval command
     Commands.Register("cd_fetch_interval", function(args)
         if #args >= 1 then
@@ -364,7 +387,8 @@ local function RegisterCommands()
                 print("[Database Fetcher] Invalid interval. Usage: cd_fetch_interval <minutes>")
             end
         else
-            print(string.format("[Database Fetcher] Current auto-fetch interval: %d minutes", Fetcher.Config.AutoFetchInterval))
+            print(string.format("[Database Fetcher] Current auto-fetch interval: %d minutes",
+                Fetcher.Config.AutoFetchInterval))
         end
     end, "Set auto-fetch interval in minutes (0 to disable)")
 
@@ -431,25 +455,25 @@ local function OnDraw()
     if Tasks.isRunning then
         -- Process with robust error handling
         local success, err = pcall(Tasks.Process)
-        
+
         -- Handle any errors in processing
         if not success then
             print("[Database Fetcher] Error in task processing: " .. tostring(err))
             Fetcher.EmergencyCleanup()
             return
         end
-        
+
         -- Draw progress indicator if enabled and needed
         if Fetcher.Config.ShowProgressBar and not Tasks.silent and Tasks.status ~= "idle" then
             pcall(Tasks.DrawProgressUI) -- Use pcall for drawing too
         end
     end
-    
+
     -- Check if we need to auto-fetch based on interval
     if Fetcher.Config.AutoFetchInterval > 0 and not Tasks.isRunning then
         local currentTime = os.time()
         local nextFetchTime = Fetcher.Config.LastAutoFetch + (Fetcher.Config.AutoFetchInterval * 60)
-        
+
         if currentTime >= nextFetchTime then
             Fetcher.AutoFetch()
         end
