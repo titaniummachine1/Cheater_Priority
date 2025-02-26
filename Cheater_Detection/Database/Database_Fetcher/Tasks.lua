@@ -1,26 +1,29 @@
--- Task management system for coroutines
+-- Simplified task system with direct processing approach
 
 local Tasks = {
-    queue = {},         -- Task queue
-    current = nil,      -- Current running coroutine
-    status = "idle",    -- Current status (idle, running, etc.)
+    queue = {},         -- Task queue (simplified)
+    status = "idle",    -- Current status (idle, running, complete)
     progress = 0,       -- Progress value (0-100)
     message = "",       -- Status message
     callback = nil,     -- Callback to run when all tasks complete
     isRunning = false,  -- Is the task system currently running
-    silent = false,     -- Whether to show UI
-    smoothProgress = 0, -- Smooth progress value for UI animation
-    completionTime = 0  -- Time when tasks completed (for timeout handling)
+    silent = false      -- Whether to show UI
 }
 
--- Add memory monitoring
-Tasks.MemoryStats = {
-    lastCheck = 0,
-    checkInterval = 1.0, -- Check memory every second
-    lastUsage = 0
+-- Basic configuration
+Tasks.Config = {
+    DebugMode = false,  -- Enable debug logging
+    YieldInterval = 500 -- Process this many items before yielding
 }
 
--- Rate limiting help - sleep between requests to avoid hitting limits
+-- Simple progress tracking (no batches)
+Tasks.tracking = {
+    sourcesTotal = 0,
+    sourcesDone = 0,
+    sourceNames = {}
+}
+
+-- Simple sleep function
 function Tasks.Sleep(ms)
     local start = globals.RealTime()
     while globals.RealTime() < start + ms / 1000 do
@@ -28,524 +31,195 @@ function Tasks.Sleep(ms)
     end
 end
 
--- Completely revised progress tracking system
-Tasks.TaskTracking = {
-    -- Source tracking fields
-    totalSources = 0,        -- Total sources to process
-    currentSource = 0,       -- Current source index (1-based)
-    sourcePercentage = 0,    -- How much % each source represents
-    batchesInSource = 0,     -- Number of batches in current source
-    batchPercentage = 0,     -- How much % each batch represents
-    completedBatches = 0,    -- Completed batches in current source
-    totalProgress = 0,       -- Total accumulated progress
-    
-    -- Task tracking fields (added missing fields)
-    totalTasks = 0,          -- Total number of tasks added
-    completedTasks = 0,      -- Number of completed tasks
-    sourceCount = 0,         -- Total number of source tasks
-    processedCount = 0,      -- Number of items processed
-    sourceProgress = 0       -- Progress within current source (0-100)
-}
-
--- Initialize progress tracking when starting a fetch operation
-function Tasks.InitProgressTracking(sourceCount)
-    Tasks.TaskTracking = {
-        -- Source tracking
-        totalSources = sourceCount,
-        currentSource = 0,
-        sourcePercentage = sourceCount > 0 and (100 / sourceCount) or 0,
-        batchesInSource = 0,
-        batchPercentage = 0,
-        completedBatches = 0,
-        totalProgress = 0,
-        
-        -- Task tracking (preserve these values)
-        totalTasks = Tasks.TaskTracking.totalTasks or 0,
-        completedTasks = Tasks.TaskTracking.completedTasks or 0,
-        sourceCount = Tasks.TaskTracking.sourceCount or 0,
-        processedCount = Tasks.TaskTracking.processedCount or 0,
-        sourceProgress = 0
+-- Initialize task tracking
+function Tasks.Init(sourceCount)
+    Tasks.tracking = {
+        sourcesTotal = sourceCount,
+        sourcesDone = 0,
+        sourceNames = {}
     }
-    
     Tasks.progress = 0
-    Tasks.smoothProgress = 0
-end
-
--- Set up batches for current source
-function Tasks.SetupSourceBatches(source, totalItems, batchSize)
-    local batchCount = math.ceil(totalItems / batchSize)
-
-    Tasks.TaskTracking.currentSource = Tasks.TaskTracking.currentSource + 1
-    Tasks.TaskTracking.batchesInSource = batchCount
-    Tasks.TaskTracking.batchPercentage = batchCount > 0
-        and (Tasks.TaskTracking.sourcePercentage / batchCount)
-        or Tasks.TaskTracking.sourcePercentage
-    Tasks.TaskTracking.completedBatches = 0
-
-    if Tasks.Config.DebugMode then
-        print(string.format("[Progress] Source %d/%d (%s): %d items, %d batches, %.2f%% per batch",
-            Tasks.TaskTracking.currentSource,
-            Tasks.TaskTracking.totalSources,
-            source.name,
-            totalItems,
-            batchCount,
-            Tasks.TaskTracking.batchPercentage
-        ))
-    end
-end
-
--- Update progress when a batch is completed
-function Tasks.BatchCompleted()
-    Tasks.TaskTracking.completedBatches = Tasks.TaskTracking.completedBatches + 1
-
-    -- Calculate new total progress - completed sources + current source progress
-    local completedSourcesProgress = (Tasks.TaskTracking.currentSource - 1) * Tasks.TaskTracking.sourcePercentage
-    local currentSourceProgress = Tasks.TaskTracking.completedBatches * Tasks.TaskTracking.batchPercentage
-
-    Tasks.TaskTracking.totalProgress = completedSourcesProgress + currentSourceProgress
-    Tasks.progress = math.floor(Tasks.TaskTracking.totalProgress)
-
-    -- Ensure progress never exceeds 100%
-    Tasks.progress = math.min(Tasks.progress, 100)
-
-    if Tasks.Config.DebugMode and Tasks.TaskTracking.completedBatches % 5 == 0 then
-        print(string.format("[Progress] Batch %d/%d completed, progress: %.2f%%",
-            Tasks.TaskTracking.completedBatches,
-            Tasks.TaskTracking.batchesInSource,
-            Tasks.progress
-        ))
-    end
-end
-
--- Mark a source as complete
-function Tasks.SourceCompleted()
-    -- Ensure source is counted as 100% complete even if batch tracking was off
-    local completedSourcesProgress = Tasks.TaskTracking.currentSource * Tasks.TaskTracking.sourcePercentage
-
-    Tasks.TaskTracking.totalProgress = completedSourcesProgress
-    Tasks.progress = math.floor(Tasks.TaskTracking.totalProgress)
-
-    -- Ensure progress never exceeds 100%
-    Tasks.progress = math.min(Tasks.progress, 100)
-
-    if Tasks.Config.DebugMode then
-        print(string.format("[Progress] Source %d/%d completed, total progress: %.2f%%",
-            Tasks.TaskTracking.currentSource,
-            Tasks.TaskTracking.totalSources,
-            Tasks.progress
-        ))
-    end
-end
-
--- Add a task to the queue with enhanced error checking
-function Tasks.Add(taskFn, description, weight, sourceInfo)
-    if type(taskFn) ~= "function" then
-        print("[Tasks] Error: Attempted to add non-function task")
-        return -1
-    end
-
-    -- Track this task in our total count
-    Tasks.TaskTracking.totalTasks = Tasks.TaskTracking.totalTasks + 1
-
-    -- Track source info if provided
-    if sourceInfo and sourceInfo.isSource then
-        Tasks.TaskTracking.sourceCount = Tasks.TaskTracking.sourceCount + 1
-    end
-
-    local co = coroutine.create(taskFn)
-    if not co then
-        print("[Tasks] Error: Failed to create coroutine")
-        return -1
-    end
-
-    table.insert(Tasks.queue, {
-        co = co,
-        description = description or "Unknown task",
-        weight = weight or 1,
-        created = globals.RealTime(),
-        sourceInfo = sourceInfo
-    })
-
-    -- Start processing if not already running
+    Tasks.queue = {}
     Tasks.isRunning = true
-    Tasks.completionTime = 0 -- Reset completion timestamp
-
-    return #Tasks.queue
+    Tasks.status = "initializing"
+    Tasks.message = "Preparing to fetch sources..."
+    
+    if Tasks.Config.DebugMode then
+        print("[Tasks] Initialized with " .. sourceCount .. " sources")
+    end
 end
 
--- More thorough reset function to prevent memory leaks
+-- Add a task with minimal tracking
+function Tasks.Add(fn, name)
+    if type(fn) ~= "function" then
+        print("[Tasks] Error: Task must be a function")
+        return false
+    end
+    
+    table.insert(Tasks.queue, {
+        fn = fn,
+        name = name
+    })
+    
+    table.insert(Tasks.tracking.sourceNames, name)
+    return true
+end
+
+-- Start a source processing
+function Tasks.StartSource(sourceName)
+    Tasks.message = "Processing: " .. sourceName
+    Tasks.currentSource = sourceName
+    
+    if Tasks.Config.DebugMode then
+        print("[Tasks] Starting source: " .. sourceName)
+    end
+end
+
+-- Mark a source as completed
+function Tasks.SourceDone()
+    Tasks.tracking.sourcesDone = Tasks.tracking.sourcesDone + 1
+    
+    if Tasks.tracking.sourcesTotal > 0 then
+        -- Calculate progress based on completed sources
+        Tasks.progress = math.floor((Tasks.tracking.sourcesDone / Tasks.tracking.sourcesTotal) * 100)
+    end
+    
+    if Tasks.Config.DebugMode then
+        print(string.format("[Tasks] Source complete: %d/%d (%.0f%%)", 
+            Tasks.tracking.sourcesDone, 
+            Tasks.tracking.sourcesTotal,
+            Tasks.progress))
+    end
+end
+
+-- Reset the task system
 function Tasks.Reset()
-    -- Clear all tables instead of recreating them
-    for k in pairs(Tasks.queue) do Tasks.queue[k] = nil end
-    Tasks.current = nil
+    Tasks.queue = {}
     Tasks.status = "idle"
     Tasks.progress = 0
     Tasks.message = ""
     Tasks.isRunning = false
     Tasks.callback = nil
-    Tasks.smoothProgress = 0
-    Tasks.completionTime = 0
-    Tasks.silent = false
+    Tasks.currentSource = nil
     
-    -- Reset task tracking with all fields
-    Tasks.TaskTracking = {
-        -- Source tracking
-        totalSources = 0,
-        currentSource = 0,
-        sourcePercentage = 0,
-        batchesInSource = 0,
-        batchPercentage = 0,
-        completedBatches = 0,
-        totalProgress = 0,
-        
-        -- Task tracking
-        totalTasks = 0,
-        completedTasks = 0,
-        sourceCount = 0,
-        processedCount = 0,
-        sourceProgress = 0
+    Tasks.tracking = {
+        sourcesTotal = 0,
+        sourcesDone = 0,
+        sourceNames = {}
     }
     
-    -- Use incremental GC instead of stop/restart
+    -- Force GC
     collectgarbage("collect")
-    for i = 1, 5 do
-        collectgarbage("step", 200)
-    end
-    collectgarbage("collect")
-
-    -- Unregister any lingering callbacks
-    callbacks.Unregister("Draw", "CDTasks_Complete")
-
-    -- Special case: reset any pending weak tables
-    if Tasks.weakTables then
-        for k in pairs(Tasks.weakTables) do
-            Tasks.weakTables[k] = nil
-        end
-    end
-
-    -- Create weak tables repository if it doesn't exist
-    Tasks.weakTables = Tasks.weakTables or setmetatable({}, { __mode = "v" })
 end
 
--- Create weak table for temporary data that should be GC'ed quickly
-function Tasks.CreateWeakTable()
-    local tbl = setmetatable({}, { __mode = "v" })
-    table.insert(Tasks.weakTables, tbl)
-    return tbl
-end
-
--- Optimized task processing function to prevent ruRBtree overflow
-function Tasks.Process()
+-- Process all tasks directly - simpler approach
+function Tasks.ProcessAll()
+    -- Don't do anything if not running
     if not Tasks.isRunning then return end
-
-    -- Check memory usage periodically
-    local currentTime = globals.RealTime()
-    if currentTime - Tasks.MemoryStats.lastCheck >= Tasks.MemoryStats.checkInterval then
-        Tasks.MemoryStats.lastCheck = currentTime
-        Tasks.MemoryStats.lastUsage = collectgarbage("count")
-
-        -- If memory usage is too high, force a collection
-        if Tasks.MemoryStats.lastUsage > 40000 then -- 40MB
-            collectgarbage("collect")
-        end
-    end
-
-    -- Check if we need to hide the window after completion
-    if Tasks.completionTime > 0 then
-        local currentTime = globals.RealTime()
-        if currentTime - Tasks.completionTime >= 2.0 then
-            Tasks.Reset() -- Reset the entire task system
-            return
-        end
-    end
-
-    -- If we have no current coroutine but have tasks in queue
-    if not Tasks.current and #Tasks.queue > 0 then
-        Tasks.current = table.remove(Tasks.queue, 1)
-        Tasks.status = "running"
-        Tasks.message = "Processing: " .. Tasks.current.description
-
-        -- Track source changes for percentage calculation
-        if Tasks.current.sourceInfo and Tasks.current.sourceInfo.isSource then
-            Tasks.TaskTracking.currentSource = Tasks.TaskTracking.currentSource + 1
-        end
-    end
-
-    -- If we have a current task, resume it
-    if Tasks.current then
-        local co = Tasks.current.co
-
-        -- Check if coroutine is valid and alive
-        if coroutine.status(co) ~= "dead" then
-            -- Resume with error handling
-            local success, result = pcall(coroutine.resume, co)
-
-            if not success then
-                -- Error occurred
-                print("[Database Fetcher] Error in task: " .. tostring(result))
-                Tasks.current = nil
-                Tasks.status = "error"
-                Tasks.message = "Error: " .. tostring(result)
-
-                -- Force GC after an error to clean up
-                collectgarbage("collect")
-                collectgarbage("collect")
-
-                -- Set completion time for timeout
-                Tasks.completionTime = globals.RealTime()
-            elseif coroutine.status(co) == "dead" then
-                -- Task completed
-                Tasks.TaskTracking.completedTasks = Tasks.TaskTracking.completedTasks + 1
-                local completedTask = Tasks.current
-                Tasks.current = nil
-
-                -- Calculate percentage based on completed tasks
-                if Tasks.TaskTracking.totalTasks > 0 then
-                    -- Base percentage on both task completion and source completion
-                    local taskPercentage = Tasks.TaskTracking.completedTasks / Tasks.TaskTracking.totalTasks
-                    local sourcePercentage = 0
-
-                    -- If we have sources, weight the percentage by source completion
-                    if Tasks.TaskTracking.sourceCount > 0 then
-                        sourcePercentage = Tasks.TaskTracking.currentSource / Tasks.TaskTracking.sourceCount
-                        -- Combined percentage, weighted 70% for sources, 30% for tasks
-                        Tasks.progress = math.floor((sourcePercentage * 0.7 + taskPercentage * 0.3) * 100)
-                    else
-                        -- Just use task percentage
-                        Tasks.progress = math.floor(taskPercentage * 100)
-                    end
-                else
-                    Tasks.progress = 0
-                end
-
-                -- Check if we're done with all tasks
-                if #Tasks.queue == 0 then
-                    Tasks.status = "complete"
-                    Tasks.message = "All tasks completed"
-                    Tasks.progress = 100
-
-                    -- Set completion time for timeout
-                    Tasks.completionTime = globals.RealTime()
-
-                    -- Execute callback if one exists
-                    if type(Tasks.callback) == "function" then
-                        local callbackToRun = Tasks.callback
-                        Tasks.callback = nil         -- Clear callback before running
-                        pcall(callbackToRun, result) -- Run with error handling
-                    end
-
-                    -- Force aggressive GC after completion
-                    collectgarbage("stop")
-                    collectgarbage("collect")
-                    collectgarbage("collect")
-                    collectgarbage("restart")
-
-                    -- Clear weak tables
-                    if Tasks.weakTables then
-                        for k in pairs(Tasks.weakTables) do
-                            Tasks.weakTables[k] = nil
-                        end
-                    end
-                end
+    
+    -- Process entire queue
+    local totalResult = 0
+    
+    -- Show starting message
+    Tasks.status = "running"
+    Tasks.message = "Processing all sources..."
+    
+    -- Make sure we render the initial state
+    coroutine.yield()
+    
+    -- Process each task directly
+    for i, task in ipairs(Tasks.queue) do
+        Tasks.StartSource(task.name)
+        
+        -- Calculate progress based on task index
+        Tasks.progress = math.floor((i - 1) / #Tasks.queue * 100)
+        
+        -- Yield to update UI
+        coroutine.yield()
+        
+        -- Execute the task function directly
+        local success, result = pcall(task.fn)
+        
+        if success then
+            if type(result) == "number" then
+                totalResult = totalResult + result
             end
+            Tasks.message = "Added " .. result .. " entries from " .. task.name
         else
-            -- Coroutine is already dead, move on
-            Tasks.current = nil
+            Tasks.message = "Error in " .. task.name .. ": " .. tostring(result)
+            print("[Tasks] Error in " .. task.name .. ": " .. tostring(result))
         end
+        
+        -- Mark this source as done
+        Tasks.SourceDone()
+        
+        -- Yield to update UI
+        coroutine.yield()
     end
-end
-
--- Calculate percentage based on more accurate metrics
-function Tasks.UpdateProgress(sourceIndex, sourceCount, processedItems, totalItems)
-    -- Update tracking info
-    Tasks.TaskTracking.sourceProgress = (totalItems > 0) and (processedItems / totalItems * 100) or 0
-    Tasks.TaskTracking.processedCount = Tasks.TaskTracking.processedCount + processedItems
-
-    -- Calculate overall progress - source-weighted approach
-    local sourcePercent = (sourceCount > 0) and (sourceIndex / sourceCount) or 0
-    local inSourcePercent = Tasks.TaskTracking.sourceProgress / 100
-
-    -- Combined percentage: 80% source completion + 20% in-source progress
-    Tasks.progress = math.floor((sourcePercent * 0.8 + inSourcePercent * 0.2) * 100)
-
-    -- Ensure progress never exceeds 100%
-    Tasks.progress = math.min(Tasks.progress, 100)
-end
-
--- Cancel all tasks
-function Tasks.CancelAll()
+    
+    -- Mark all processing as complete
+    Tasks.status = "complete"
+    Tasks.progress = 100
+    Tasks.message = "All sources processed! Added " .. totalResult .. " entries total."
+    
+    -- Run callback if provided
+    if type(Tasks.callback) == "function" then
+        pcall(Tasks.callback, totalResult)
+    end
+    
+    -- Give time to show completion
+    local startTime = globals.RealTime()
+    while globals.RealTime() < startTime + 2 do
+        coroutine.yield()
+    end
+    
+    -- Reset after showing completion
     Tasks.Reset()
-    print("[Database Fetcher] All tasks cancelled")
+    
+    return totalResult
 end
 
--- Debug function to print task status
-function Tasks.PrintDebug()
-    print("Tasks Status: " .. Tasks.status)
-    print("Is Running: " .. tostring(Tasks.isRunning))
-    print("Progress: " .. Tasks.progress .. "%")
-    print("Message: " .. Tasks.message)
-    print("Queue Length: " .. #Tasks.queue)
-    print("Current Task: " .. (Tasks.current and Tasks.current.description or "None"))
-    print("Silent Mode: " .. tostring(Tasks.silent))
-end
-
--- Draw progress UI function
+-- Draw progress UI function - simplified version
 function Tasks.DrawProgressUI()
-    -- Set up basic dimensions and styles
+    -- Set up basic dimensions
     local x, y = 15, 15
     local width = 260
     local height = 70
     local padding = 10
     local barHeight = 12
-    local cornerRadius = 6
-
-    -- Calculate pulsing effect
-    local pulseValue = math.sin(globals.RealTime() * 4) * 0.2 + 0.8 -- Value between 0.6 and 1.0
-    local pulseFactor = math.floor(pulseValue * 100) / 100          -- Keep precision but without float errors
-
-    -- Calculate smooth progress (to avoid jumpy bar)
-    local targetProgress = Tasks.progress / 100
-    if not Tasks.smoothProgress then Tasks.smoothProgress = 0 end
-    Tasks.smoothProgress = Tasks.smoothProgress + (targetProgress - Tasks.smoothProgress) * 0.1
-
-    -- Ensure all drawing coordinates are integers to prevent cursor bit overflow
-    x, y = math.floor(x), math.floor(y)
-    width, height = math.floor(width), math.floor(height)
-    padding, barHeight = math.floor(padding), math.floor(barHeight)
-    cornerRadius = math.floor(cornerRadius)
-
-    -- Draw panel background with rounded corners
-    -- Main background
+    
+    -- Draw background
     draw.Color(20, 20, 20, 220)
-    draw.FilledRect(x + cornerRadius, y, x + width - cornerRadius, y + height) -- Main rectangle
-    draw.FilledRect(x, y + cornerRadius, x + width, y + height - cornerRadius) -- Vertical fill
-
-    -- Draw the corners
-    draw.OutlinedCircle(x + cornerRadius, y + cornerRadius, cornerRadius, 12)
-    draw.OutlinedCircle(x + width - cornerRadius, y + cornerRadius, cornerRadius, 12)
-    draw.OutlinedCircle(x + cornerRadius, y + height - cornerRadius, cornerRadius, 12)
-    draw.OutlinedCircle(x + width - cornerRadius, y + height - cornerRadius, cornerRadius, 12)
-
-    -- Fill the corners
-    draw.Color(20, 20, 20, 220)
-    for i = 0, cornerRadius do
-        draw.FilledRect(x, y + cornerRadius - i, x + cornerRadius - i, y + cornerRadius + 1)
-        draw.FilledRect(x + width - cornerRadius + i, y + cornerRadius - i, x + width, y + cornerRadius + 1)
-        draw.FilledRect(x, y + height - cornerRadius - 1, x + cornerRadius - i, y + height - cornerRadius + i)
-        draw.FilledRect(x + width - cornerRadius + i, y + height - cornerRadius - 1, x + width,
-            y + height - cornerRadius + i)
-    end
-
-    -- Outer glow effect
-    local glowSize = 8
-    local glowAlpha = math.floor(40 * pulseFactor)
-    for i = 1, glowSize do
-        local alpha = math.floor(glowAlpha * (1 - i / glowSize))
-        draw.Color(100, 150, 255, alpha)
-        draw.OutlinedRect(x - i, y - i, x + width + i, y + height + i)
-    end
-
-    -- Top border highlight
+    draw.FilledRect(x, y, x + width, y + height)
+    
+    -- Draw border
     draw.Color(60, 120, 255, 180)
-    draw.FilledRect(x + cornerRadius, y, x + width - cornerRadius, y + 2)
-
-    -- Title text with shadow
-    draw.SetFont(draw.CreateFont("Verdana", 16, 800, FONTFLAG_ANTIALIAS))
-
-    local title = "Database Fetcher"
-    local titleWidth, titleHeight = draw.GetTextSize(title)
-    titleWidth, titleHeight = math.floor(titleWidth), math.floor(titleHeight)
-
-    -- Draw fancy title background
-    draw.Color(40, 100, 220, 60)
-    draw.FilledRect(x + padding - 2, y + padding - 2,
-        x + padding + titleWidth + 2, y + padding + titleHeight + 2)
-
-    -- Draw text shadow
-    draw.Color(0, 0, 0, 180)
-    draw.Text(x + padding + 1, y + padding + 1, title)
-
-    -- Draw text
+    draw.OutlinedRect(x, y, x + width, y + height)
+    
+    -- Title text
+    draw.SetFont(draw.CreateFont("Verdana", 16, 800))
     draw.Color(120, 200, 255, 255)
-    draw.Text(x + padding, y + padding, title)
-
-    -- Task status message
-    draw.SetFont(draw.CreateFont("Verdana", 12, 400, FONTFLAG_ANTIALIAS))
-    local message = Tasks.message
-
-    -- Truncate message if too long
-    local msgWidth = draw.GetTextSize(message)
-    msgWidth = math.floor(msgWidth)
-
-    if msgWidth > width - 2 * padding - 40 then
-        local truncated = message
-        while draw.GetTextSize(truncated .. "...") > width - 2 * padding - 40 do
-            truncated = truncated:sub(1, -2)
-        end
-        message = truncated .. "..."
-    end
-
-    -- Draw message text with shadow
-    draw.Color(0, 0, 0, 150)
-    draw.Text(x + padding + 1, y + padding + titleHeight + 5, message)
-
+    draw.Text(x + padding, y + padding, "Database Fetcher")
+    
+    -- Status message
+    draw.SetFont(draw.CreateFont("Verdana", 12, 400))
     draw.Color(255, 255, 255, 255)
-    draw.Text(x + padding, y + padding + titleHeight + 4, message)
-
-    -- Progress bar background with rounded corners
+    draw.Text(x + padding, y + padding + 20, Tasks.message)
+    
+    -- Progress bar background
     local barY = y + height - padding - barHeight
     draw.Color(40, 40, 40, 200)
     draw.FilledRect(x + padding, barY, x + width - padding, barY + barHeight)
-
-    -- Progress bar fill with gradient
-    local progressWidth = math.floor((width - 2 * padding) * Tasks.smoothProgress)
-    local progressEnd = math.floor(x + padding + progressWidth) -- Ensure integer
-
-    -- Progress gradient - blue to cyan
+    
+    -- Progress bar fill
+    local progressWidth = math.floor((width - 2 * padding) * (Tasks.progress / 100))
     draw.Color(30, 120, 255, 255)
-    draw.FilledRectFade(
-        x + padding, barY,
-        progressEnd, barY + barHeight,
-        255, 180, true
-    )
-
-    -- Highlight on top of progress bar
-    draw.Color(150, 230, 255, 100)
-    draw.FilledRect(x + padding, barY, progressEnd, barY + 2)
-
+    draw.FilledRect(x + padding, barY, x + padding + progressWidth, barY + barHeight)
+    
     -- Progress percentage text
-    local percent = string.format("%d%%", math.min(Tasks.progress, 100))
-    local percentWidth = draw.GetTextSize(percent)
-    percentWidth = math.floor(percentWidth)
-
-    draw.Color(0, 0, 0, 150)
-    draw.Text(x + width - padding - percentWidth + 1, barY + 1, percent)
-
+    local percent = string.format("%d%%", Tasks.progress)
     draw.Color(255, 255, 255, 255)
-    draw.Text(x + width - padding - percentWidth, barY, percent)
-
-    -- Add animated glow at the progress edge
-    if progressWidth > 0 then
-        local glowPos = math.floor(x + padding + progressWidth) -- Ensure integer
-        local pulseAlpha = math.floor(120 * pulseFactor)
-        draw.Color(220, 240, 255, pulseAlpha)
-        draw.FilledRect(glowPos - 2, barY, glowPos + 2, barY + barHeight)
-    end
-
-    -- If task is completed, show completion message
-    if Tasks.completionTime > 0 then
-        local timeLeft = math.ceil(2.0 - (globals.RealTime() - Tasks.completionTime))
-        local closeMsg = string.format("Closing in %d...", timeLeft)
-
-        draw.Color(255, 255, 255, 200)
-        draw.Text(x + width - padding - draw.GetTextSize(closeMsg), y + padding, closeMsg)
-    end
+    draw.Text(x + width - padding - draw.GetTextSize(percent), barY, percent)
 end
-
--- Register debug command
-pcall(function()
-    local Commands = require("Cheater_Detection.Utils.Common").Lib.Utils.Commands
-    Commands.Register("cd_tasks_debug", Tasks.PrintDebug, "Print task system debug info")
-end)
 
 return Tasks
