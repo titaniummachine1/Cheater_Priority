@@ -60,7 +60,7 @@ local function InitializeSystems()
         local query = args[1]
         local found = false
 
-        -- Check if it's a valid SteamID
+        -- Check if it's a valid SteamID XD
         if query:match("^%d+$") and #query >= 17 then
             local record = G.Database.GetRecord(query)
             if record then
