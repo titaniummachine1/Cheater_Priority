@@ -54,6 +54,12 @@ end
 -- Safe download with better error handling and user agent rotation
 function Parsers.Download(url, retryCount)
     retryCount = retryCount or Parsers.Config.MaxRetries
+    
+    -- Use different user agents for GitHub to avoid rate limiting
+    if url:find("github") or url:find("githubusercontent") then
+        table.insert(Parsers.Config.UserAgents, 1, "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
+    end
+    
     local retry = 0
     local lastError = nil
 
@@ -111,15 +117,19 @@ function Parsers.Download(url, retryCount)
         else
             -- Check for HTML response (likely an error page)
             if result:match("<!DOCTYPE html>") or result:match("<html") then
-                if not Parsers.Config.AllowHtml then
-                    lastError = "Received HTML instead of data (website error or CAPTCHA)"
-                    -- Print more detailed info in debug mode
-                    if Parsers.Config.DebugMode then
-                        print("[Parsers] HTML response from " .. url .. " (length: " .. #result .. ")")
-                        print("[Parsers] First 100 chars: " .. result:sub(1, 100))
-                    end
+                -- Check if it's GitHub returning HTML
+                if url:find("github") or url:find("githubusercontent") and result:find("rate limit") then
+                    lastError = "GitHub rate limit exceeded. Try again later."
                 else
-                    -- HTML allowed for this request
+                    lastError = "Received HTML instead of data (website error or CAPTCHA)"
+                end
+                
+                -- Always print the HTML response start for debugging
+                print("[Parsers] HTML response from " .. url .. " (length: " .. #result .. ")")
+                print("[Parsers] First 100 chars: " .. result:sub(1, 100))
+                
+                -- If HTML allowed, return it anyway
+                if Parsers.Config.AllowHtml then
                     return result
                 end
             else
@@ -259,6 +269,12 @@ end
 
 -- Super robust raw list processor
 function Parsers.ProcessRawList(content, database, sourceName, sourceCause)
+    -- Special handling for bots.tf data
+    if sourceName == "bots.tf" then
+        return Parsers.ProcessBotsTF(content, database, sourceName, sourceCause)
+    end
+    
+    -- Regular processing for other raw sources
     -- Input validation with detailed errors
     if not content then
         Parsers.LogError("Empty content from " .. (sourceName or "unknown source"))
@@ -367,7 +383,7 @@ function Parsers.ProcessRawList(content, database, sourceName, sourceCause)
     return count
 end
 
--- Process a source with improved error handling
+-- Process a source with improved error handling and fallbacks
 function Parsers.ProcessSource(source, database)
     -- Validate inputs
     if not source then
@@ -393,30 +409,57 @@ function Parsers.ProcessSource(source, database)
     local sourceName = source.name or "Unknown Source"
     Tasks.message = "Fetching from " .. sourceName .. "..."
 
-    -- Check if source is available from Github backup if original fails
-    local sourceUrls = {
-        primary = source.url,
-        backup = nil
-    }
-    
-    -- If the URL isn't a Github raw URL already, add a backup GitHub mirror path
-    if not source.url:match("raw.githubusercontent.com") then
-        sourceUrls.backup = "https://raw.githubusercontent.com/user/cheater-list-mirrors/main/" .. 
-                            sourceName:gsub("%s+", "_"):lower() .. ".txt"
+    -- Load fallbacks if needed
+    local Fallbacks
+    pcall(function() 
+        Fallbacks = require("Cheater_Detection.Database.Database_Fetcher.Fallbacks")
+    end)
+
+    -- Special handling for bots.tf which often fails due to CAPTCHA
+    local usesFallback = false
+    if sourceName:lower():find("bots%.tf") and Fallbacks then
+        -- First try downloading normally
+        content = Parsers.Download(source.url)
+        
+        -- If it fails (likely HTML/CAPTCHA response), use fallbacks
+        if not content or #content == 0 or content:match("<!DOCTYPE html>") then
+            -- Use GitHub fallbacks first - try common repositories
+            local fallbackUrls = {
+                "https://raw.githubusercontent.com/PazerOP/tf2_bot_detector/master/staging/cfg/playerlist.official.json",
+                "https://raw.githubusercontent.com/wgetJane/tf2-catkill/master/bots.txt"
+            }
+            
+            for _, url in ipairs(fallbackUrls) do
+                Tasks.message = "Using fallback source for " .. sourceName .. "..."
+                content = Parsers.Download(url)
+                
+                if content and #content > 0 and not content:match("<!DOCTYPE html>") then
+                    Tasks.message = "Fallback source successful!"
+                    usesFallback = true
+                    break
+                end
+            end
+            
+            -- If all online sources fail, use stored fallback data
+            if (not content or #content == 0 or content:match("<!DOCTYPE html>")) and Fallbacks.LoadFallbackBots then
+                Tasks.message = "Using emergency fallback bot data..."
+                local emergencyCount = Fallbacks.LoadFallbackBots(database, source.cause)
+                Tasks.message = "Added " .. emergencyCount .. " bots from emergency fallback"
+                coroutine.yield()
+                return emergencyCount
+            end
+        end
+    else
+        -- Non-bots.tf source - normal download procedure
+        content = Parsers.Download(source.url)
     end
-    
-    -- Try to download content
-    local content
-    
-    -- Try primary URL
-    content = Parsers.Download(sourceUrls.primary)
-    
-    -- If primary failed and we have a backup, try it
-    if (not content or #content == 0) and sourceUrls.backup then
+
+    -- If we still have no content, try backup URL if one exists
+    if (not content or #content == 0) and sourceUrls and sourceUrls.backup then
         Tasks.message = "Primary URL failed, trying backup..."
         content = Parsers.Download(sourceUrls.backup)
     end
-    
+
     -- If all downloads failed
     if not content or #content == 0 then
         Parsers.LogError("Failed to fetch from " .. sourceName)
@@ -425,8 +468,18 @@ function Parsers.ProcessSource(source, database)
 
     -- Process content based on parser type with full error handling
     local count = 0
+    
+    -- If we're using a fallback URL for bots.tf, adjust the parser as needed
+    local parser = source.parser
+    if usesFallback and sourceName:lower():find("bots%.tf") then
+        if content:match("^%s*{") or content:match("^%s*%[") then
+            parser = "tf2db"  -- Use JSON parser for JSON content
+        else
+            parser = "raw"    -- Use raw parser for plain text content
+        end
+    end
 
-    if source.parser == "raw" then
+    if parser == "raw" then
         local success, result = pcall(function()
             return Parsers.ProcessRawList(content, database, sourceName, source.cause)
         end)
@@ -436,7 +489,7 @@ function Parsers.ProcessSource(source, database)
         else
             Parsers.LogError("Failed to parse raw list from " .. sourceName, result)
         end
-    elseif source.parser == "tf2db" then
+    elseif parser == "tf2db" then
         local success, result = pcall(function()
             return Parsers.ProcessTF2DB(content, database, source)
         end)
@@ -445,6 +498,16 @@ function Parsers.ProcessSource(source, database)
             count = result
         else
             Parsers.LogError("Failed to parse TF2DB data from " .. sourceName, result)
+            
+            -- If JSON parsing failed, try as raw list as a fallback
+            Tasks.message = "Trying alternate parser for " .. sourceName
+            success, result = pcall(function() 
+                return Parsers.ProcessRawList(content, database, sourceName, source.cause)
+            end)
+            
+            if success then
+                count = result
+            end
         end
     else
         Parsers.LogError("Unknown parser type: " .. source.parser)
@@ -681,6 +744,108 @@ function Parsers.ProcessTF2DBJson(jsonData, database, source)
     coroutine.yield()
     
     collectgarbage("collect")
+    return count
+end
+
+-- New function specifically for handling bots.tf response
+function Parsers.ProcessBotsTF(content, database, sourceName, sourceCause)
+    -- Input validation with detailed errors
+    if not content then
+        Parsers.LogError("Empty content from " .. sourceName)
+        return 0
+    end
+    
+    if not database then
+        Parsers.LogError("Invalid database object")
+        return 0
+    end
+    
+    Tasks.message = "Processing " .. sourceName .. "..."
+    coroutine.yield()
+    
+    -- Initialize counters
+    local count = 0
+    local skipped = 0
+    local invalid = 0
+    local linesProcessed = 0
+    
+    -- First do a quick check of content type
+    if type(content) ~= "string" then
+        Parsers.LogError("Invalid content type: " .. type(content))
+        return 0
+    end
+    
+    -- bots.tf returns raw text with one SteamID64 per line
+    -- It might have some empty lines or other data we need to filter
+    
+    -- Count lines for progress reporting
+    local lines = {}
+    local totalLines = 0
+    
+    -- Extract lines with error handling
+    local success, errorMsg = pcall(function()
+        for line in content:gmatch("[^\r\n]+") do
+            -- Skip empty lines or lines that are obviously not SteamID64s
+            line = line:match("^%s*(.-)%s*$") -- Trim whitespace
+            if line ~= "" and #line >= 15 and #line <= 20 and line:match("^%d+$") then
+                table.insert(lines, line)
+                totalLines = totalLines + 1
+            end
+        end
+    end)
+    
+    if not success then
+        Parsers.LogError("Failed to parse lines from " .. sourceName, errorMsg)
+        return 0
+    end
+    
+    if totalLines == 0 then
+        Parsers.LogError("No valid SteamID64s found in " .. sourceName, "Content length: " .. #content)
+        return 0
+    end
+    
+    Tasks.message = "Processing " .. totalLines .. " SteamID64s from " .. sourceName
+    coroutine.yield()
+    
+    -- Process each line with robust error handling
+    for i, steamID64 in ipairs(lines) do
+        -- We should already have valid SteamID64s at this point
+        
+        -- Add to database if not duplicate
+        if not database.content[steamID64] then
+            database.content[steamID64] = {
+                Name = "Unknown",
+                proof = sourceCause
+            }
+            
+            -- Set player priority with error handling
+            pcall(function()
+                playerlist.SetPriority(steamID64, 10)
+            end)
+            count = count + 1
+        else
+            skipped = skipped + 1
+        end
+        
+        linesProcessed = linesProcessed + 1
+        
+        -- Update progress periodically
+        if linesProcessed % Parsers.Config.YieldInterval == 0 or linesProcessed == totalLines then
+            local progressPct = math.floor((linesProcessed / totalLines) * 100)
+            Tasks.message = string.format("Processing %s: %d%% (%d added, %d skipped)",
+                sourceName, progressPct, count, skipped)
+            coroutine.yield()
+        end
+    end
+    
+    Tasks.message = string.format("Finished %s: %d added, %d skipped",
+        sourceName, count, skipped)
+    coroutine.yield()
+    
+    -- Clear lines table to free memory
+    lines = nil
+    collectgarbage("collect")
+    
     return count
 end
 

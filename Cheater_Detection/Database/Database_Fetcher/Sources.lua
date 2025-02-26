@@ -1,4 +1,4 @@
--- Source definitions for database fetching with updated URLs
+-- Source definitions for database fetching with updated URLs and fallbacks
 
 local Sources = {}
 
@@ -6,9 +6,17 @@ local Sources = {}
 Sources.List = {
     {
         name = "bots.tf",
-        url = "http://api.bots.tf/rawtext", -- Exact URL from the Python code
+        url = "https://raw.githubusercontent.com/PazerOP/tf2_bot_detector/master/staging/cfg/playerlist.official.json",
+        -- Switched from bots.tf to PazerOP's GitHub JSON which contains the same bot data
         cause = "Bot",
-        parser = "raw" -- Use raw parser for this endpoint
+        parser = "tf2db" -- Changed parser to tf2db since it's JSON format
+    },
+    -- Fallback source for bots (in case the primary source fails)
+    {
+        name = "TF2BD Bots (backup)",
+        url = "https://raw.githubusercontent.com/wgetJane/tf2-catkill/master/bots.txt",
+        cause = "Bot",
+        parser = "raw"
     },
     {
         name = "d3fc0n6 Cheater List",
