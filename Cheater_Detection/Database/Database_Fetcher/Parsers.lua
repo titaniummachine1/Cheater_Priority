@@ -6,20 +6,21 @@ local Parsers = {}
 
 -- Configuration for request timing
 Parsers.Config = {
-    RetryDelay = 4,         -- Initial delay between retries (seconds)
-    RetryBackoff = 2,       -- Multiply delay by this factor on each retry
-    RateLimitDelay = 2000,  -- Milliseconds to wait between requests (2 seconds)
-    RequestTimeout = 10,    -- Maximum time to wait for a response (seconds)
-    BatchSize = 200,        -- REDUCED: Number of entries to process in one batch (was 500)
-    SourceDelay = 5000,     -- Milliseconds to wait between sources (5 seconds)
-    YieldFrequency = 20     -- NEW: Yield every N items to prevent ruRBtree overflow
+    RetryDelay = 4,        -- Initial delay between retries (seconds)
+    RetryBackoff = 2,      -- Multiply delay by this factor on each retry
+    RateLimitDelay = 2000, -- Milliseconds to wait between requests (2 seconds)
+    RequestTimeout = 10,   -- Maximum time to wait for a response (seconds)
+    BatchSize = 100,       -- REDUCED FURTHER: Smaller batch size (was 200)
+    SourceDelay = 5000,    -- Milliseconds to wait between sources (5 seconds)
+    YieldFrequency = 10,   -- REDUCED: More frequent yields (was 20)
+    UseWeakTables = true   -- NEW: Use weak tables for temporary data
 }
 
 -- Memory management helpers
 Parsers.Memory = {
-    lastGC = 0,             -- Last garbage collection time
-    gcInterval = 2,         -- REDUCED: Seconds between forced garbage collections (was 3)
-    memoryThreshold = 25000, -- REDUCED: KB threshold to trigger extra GC (was 50MB)
+    lastGC = 0,                -- Last garbage collection time
+    gcInterval = 2,            -- REDUCED: Seconds between forced garbage collections (was 3)
+    memoryThreshold = 25000,   -- REDUCED: KB threshold to trigger extra GC (was 50MB)
     emergencyThreshold = 40000 -- NEW: Emergency cleanup threshold
 }
 
@@ -27,49 +28,49 @@ Parsers.Memory = {
 function Parsers.ForceGarbageCollection(immediate)
     local currentTime = globals.RealTime()
     local memUsage = collectgarbage("count")
-    
+
     -- Emergency GC if memory usage exceeds threshold
     if memUsage > Parsers.Memory.emergencyThreshold then
         immediate = true
         Tasks.message = "Emergency memory cleanup in progress..."
     end
-    
+
     -- Only GC if enough time has passed since last GC, unless immediate is specified
     if immediate or currentTime - Parsers.Memory.lastGC > Parsers.Memory.gcInterval then
         Tasks.message = "Memory cleanup in progress..."
-        
+
         -- First yield to let the game breathe
         coroutine.yield()
-        
+
         -- Store some metrics for logging
         local beforeMem = collectgarbage("count")
-        
-        -- Force a complete garbage collection cycle
-        collectgarbage("stop")  -- Disable automatic collection
-        collectgarbage("collect")
-        Tasks.Sleep(50) -- Short yield to let the system process
-        
-        -- Do another collection for good measure
-        collectgarbage("collect")
-        Tasks.Sleep(50)
-        
-        -- Re-enable automatic collection
-        collectgarbage("restart")
-        
+
+        -- Set temporary tables to nil to help GC
+        Parsers._tempData = nil
+
+        -- Force a complete garbage collection cycle - multiple passes
+        collectgarbage("stop")      -- Disable automatic collection
+        collectgarbage("collect")   -- First pass
+        Tasks.Sleep(50)             -- Yield to let system process
+        collectgarbage("collect")   -- Second pass
+        Tasks.Sleep(50)             -- Yield again
+        collectgarbage("collect")   -- Third pass for good measure
+        collectgarbage("restart")   -- Re-enable automatic collection
+
         -- Update last GC time
         Parsers.Memory.lastGC = currentTime
-        
+
         -- Log memory details when debugging
         local afterMem = collectgarbage("count")
         if Parsers.Config.DebugMode then
-            print(string.format("[Memory] Freed: %.2f MB (%.2f MB → %.2f MB)", 
-                (beforeMem - afterMem)/1024, beforeMem/1024, afterMem/1024))
+            print(string.format("[Memory] Freed: %.2f MB (%.2f MB → %.2f MB)",
+                (beforeMem - afterMem) / 1024, beforeMem / 1024, afterMem / 1024))
         end
-        
+
         -- Return the current memory usage for monitoring
         return afterMem
     end
-    
+
     return memUsage
 end
 
@@ -77,40 +78,40 @@ end
 function Parsers.CoGet(url, retryCount)
     retryCount = retryCount or 3
     local retry = 0
-    
+
     -- First wait for rate limit to respect API limits
     Tasks.message = "Rate limit delay before fetching..."
     Tasks.Sleep(Parsers.Config.RateLimitDelay)
-    
+
     while retry < retryCount do
         Tasks.message = "Downloading from " .. url .. " (attempt " .. (retry + 1) .. "/" .. retryCount .. ")"
-        
+
         -- Yield to allow game to render between attempts
         coroutine.yield()
-        
+
         local success, response
         local timedOut = false
-        
+
         -- Start a timer to detect timeouts
         local startTime = globals.RealTime()
-        
+
         -- Make the HTTP request
         success, response = pcall(http.Get, url)
-        
+
         if success and response and #response > 0 then
             -- Add delay after successful request to be nice to the server
             Tasks.message = "Request completed, waiting to respect rate limits..."
             Tasks.Sleep(Parsers.Config.RateLimitDelay)
             return response
         end
-        
+
         retry = retry + 1
-        
+
         -- If we need to retry, wait with exponential backoff
         if retry < retryCount then
             local waitTime = Parsers.Config.RetryDelay * (Parsers.Config.RetryBackoff ^ (retry - 1))
             Tasks.message = string.format("Request failed. Retrying in %d seconds...", waitTime)
-            
+
             local startWait = globals.RealTime()
             while globals.RealTime() < startWait + waitTime do
                 local remaining = math.ceil((startWait + waitTime) - globals.RealTime())
@@ -122,7 +123,7 @@ function Parsers.CoGet(url, retryCount)
             Tasks.Sleep(1000) -- Short delay to show the failure message
         end
     end
-    
+
     return nil
 end
 
@@ -172,45 +173,48 @@ function Parsers.CoParseBatch(content, database, sourceName, sourceCause)
     local count = 0
     local linesProcessed = 0
     local duplicateSkipped = 0
-    local LINES_PER_BATCH = Parsers.Config.BatchSize -- Process this many before yielding/GC
-    local YIELD_FREQUENCY = Parsers.Config.YieldFrequency -- Yield every N items
-    
-    -- Process directly without creating a huge table of lines
+    local LINES_PER_BATCH = Parsers.Config.BatchSize      -- Reduced batch size
+    local YIELD_FREQUENCY = Parsers.Config.YieldFrequency -- More frequent yields
+
+    -- Process directly without creating tables of lines
     Tasks.message = "Processing " .. sourceName .. "..."
     coroutine.yield()
-    
-    -- Find total line count first
+
+    -- Count total lines first
     local totalLines = 0
     for _ in content:gmatch("[^\r\n]+") do
         totalLines = totalLines + 1
+        -- Yield every 1000 lines while counting to prevent freezing
+        if totalLines % 1000 == 0 then
+            coroutine.yield()
+        end
     end
-    
+
     -- Process in smaller chunks
     local currentBatch = 0
     local linesInCurrentBatch = 0
     local lineCount = 0
-    
+
     -- Process line by line to avoid storing all lines in memory
     for line in content:gmatch("[^\r\n]+") do
         lineCount = lineCount + 1
         linesProcessed = linesProcessed + 1
-        
-        -- Trim whitespace directly without storing
+
+        -- Trim whitespace directly
         line = line:match("^%s*(.-)%s*$")
-        
+
         -- Skip comments and empty lines
         if line ~= "" and not line:match("^%-%-") and not line:match("^#") then
             -- Check if it's a valid SteamID64 (should be a 17-digit number)
             if line:match("^%d+$") and #line == 17 then
                 local steamID64 = line
-                
-                -- Use direct index lookups instead of intermediate variables
+
+                -- Use direct index lookups
                 if not database.content[steamID64] then
-                    -- Only add if not already in database
+                    -- Only add if not already in database - minimal data structure
                     database.content[steamID64] = {
                         Name = "Unknown",
-                        proof = sourceCause,
-                        source = sourceName
+                        proof = sourceCause
                     }
                     
                     -- Set player priority
@@ -221,41 +225,57 @@ function Parsers.CoParseBatch(content, database, sourceName, sourceCause)
                 end
             end
         end
-        
+
+        -- Clear the line variable to help GC
+        line = nil
+
         linesInCurrentBatch = linesInCurrentBatch + 1
-        
-        -- Yield more frequently to prevent ruRBtree overflow
+
+        -- Yield much more frequently to prevent ruRBtree overflow
         if linesInCurrentBatch % YIELD_FREQUENCY == 0 then
             coroutine.yield()
         end
-        
+
         -- After processing a batch, perform garbage collection
         if linesInCurrentBatch >= LINES_PER_BATCH then
             currentBatch = currentBatch + 1
-            
+
             -- Update progress message and yield
-            Tasks.message = string.format("Processing %s... %d/%d lines (%d added, %d skipped)", 
+            Tasks.message = string.format("Processing %s... %d/%d lines (%d added, %d skipped)",
                 sourceName, linesProcessed, totalLines, count, duplicateSkipped)
-            
-            -- Force GC after each batch
+
+            -- Force GC after each batch - very aggressive
             Parsers.ForceGarbageCollection(true)
-            
+
             -- Reset batch counter
             linesInCurrentBatch = 0
-            
+
             -- Important yield point to prevent ruRBtree overflow
             coroutine.yield()
+            
+            -- Run a second collection after yield
+            collectgarbage("collect")
         end
     end
-    
+
     -- Final progress update
-    Tasks.message = string.format("Finished %s: %d added, %d skipped", 
+    Tasks.message = string.format("Finished %s: %d added, %d skipped",
         sourceName, count, duplicateSkipped)
-    
+
     -- Final cleanup
     content = nil -- Clear the content reference
     Parsers.ForceGarbageCollection(true)
     
+    -- Set all locals to nil explicitly
+    totalLines = nil
+    currentBatch = nil
+    linesInCurrentBatch = nil
+    lineCount = nil
+    linesProcessed = nil
+    duplicateSkipped = nil
+    LINES_PER_BATCH = nil
+    YIELD_FREQUENCY = nil
+
     return count
 end
 
@@ -346,131 +366,156 @@ function Parsers.CoFetchSource(source, database)
         print("[Database Fetcher] Invalid source configuration")
         return 0
     end
-    
+
     -- Initial cleanup before starting new source
     Parsers.ForceGarbageCollection(true)
-    
+
     Tasks.message = "Preparing to fetch from " .. source.name .. "..."
     coroutine.yield() -- Give UI a chance to update
-    
+
     -- Apply a delay between sources
     Tasks.message = "Waiting for rate limit cooldown..."
     Tasks.Sleep(Parsers.Config.SourceDelay)
-    
+
     Tasks.message = "Fetching from " .. source.name .. "..."
     local content = Parsers.CoGet(source.url)
-    
+
     if not content or #content == 0 then
         print("[Database Fetcher] Failed to fetch from " .. source.name)
         return 0
     end
-    
+
     -- GC before parsing
     Parsers.ForceGarbageCollection(true)
-    
+
     -- Parse the content based on the specified parser
     local count = 0
-    
+
     if source.parser == "raw" then
         -- Process raw list with optimized batch processing
         count = Parsers.CoParseBatch(content, database, source.name, source.cause)
-        
-        -- Important: Clear content reference to free memory
+
+        -- Important: Clear content reference to free memory immediately
         content = nil
         collectgarbage("collect")
     elseif source.parser == "tf2db" then
         -- For JSON content, process differently to avoid memory issues
         Tasks.message = "Parsing JSON data from " .. source.name
         coroutine.yield()
-        
+
+        -- Use weak table for JSON data
+        local weakData = Tasks.CreateWeakTable()
+
         -- Parse JSON in a pcall with immediate cleanup
-        local success, data = pcall(function()
-            -- Parse JSON
-            local result = Json.decode(content)
+        local success = pcall(function()
+            -- Parse JSON into weak table
+            weakData.result = Json.decode(content)
             
             -- Immediately clear the content to free memory
             content = nil
             collectgarbage("collect")
-            
-            return result
         end)
-        
+
         -- Force GC after JSON parsing
         Parsers.ForceGarbageCollection(true)
-        
-        if success and data and data.players then
-            local players = data.players
+
+        -- Process data if successful, using local variables to minimize table lookups
+        if success and weakData.result and weakData.result.players then
+            local players = weakData.result.players
             local playerCount = #players
+            weakData.result = nil -- Clear reference to help GC
             
             -- Process in smaller batches
-            local batchSize = math.min(Parsers.Config.BatchSize, 100) -- Smaller batches for JSON
+            local batchSize = math.min(Parsers.Config.BatchSize, 50) -- Even smaller batches for JSON
             for i = 1, playerCount, batchSize do
                 local batchEnd = math.min(i + batchSize - 1, playerCount)
-                Tasks.message = "Processing " .. source.name .. "... batch " .. 
-                    math.ceil(i/batchSize) .. "/" .. math.ceil(playerCount/batchSize)
-                
+                Tasks.message = "Processing " .. source.name .. "... batch " ..
+                    math.ceil(i / batchSize) .. "/" .. math.ceil(playerCount / batchSize)
+
                 local batchCount = 0
-                
+
                 -- Process this batch
                 for j = i, batchEnd do
-                    local player = players[j]
-                    
-                    -- Yield more frequently
-                    if (j - i) % Parsers.Config.YieldFrequency == 0 then
+                    -- Yield very frequently
+                    if (j - i) % (Parsers.Config.YieldFrequency / 2) == 0 then
                         coroutine.yield()
                     end
-                    
+
+                    -- Extract player to local variable to minimize table lookups
+                    local player = players[j]
                     if player and player.steamid then
                         local steamID64
-                        
+                        local steamid = player.steamid -- Local copy to avoid table lookup
+
                         -- Convert to SteamID64 if needed
-                        if player.steamid:match("^%[U:1:%d+%]$") then
-                            steamID64 = steam.ToSteamID64(player.steamid)
-                        elseif player.steamid:match("STEAM_0:%d:%d+") then
-                            steamID64 = steam.ToSteamID64(player.steamid)
-                        elseif player.steamid:match("^%d+$") and #player.steamid == 17 then
-                            steamID64 = player.steamid -- Already SteamID64
+                        if steamid:match("^%[U:1:%d+%]$") then
+                            steamID64 = steam.ToSteamID64(steamid)
+                        elseif steamid:match("STEAM_0:%d:%d+") then
+                            steamID64 = steam.ToSteamID64(steamid)
+                        elseif steamid:match("^%d+$") and #steamid == 17 then
+                            steamID64 = steamid -- Already SteamID64
                         end
-                        
+
+                        -- Clear locals to help GC
+                        steamid = nil
+
                         if steamID64 and not database.content[steamID64] then
                             database.content[steamID64] = {
                                 Name = "Unknown",
-                                proof = source.cause,
-                                source = source.name
+                                proof = source.cause
                             }
-                            
+
                             playerlist.SetPriority(steamID64, 10)
                             count = count + 1
                             batchCount = batchCount + 1
                         end
+                        
+                        -- Clear steamID64 to help GC
+                        steamID64 = nil
                     end
+                    
+                    -- Clear player to help GC
+                    player = nil
                 end
-                
+
                 -- After processing a batch, force GC
-                Tasks.message = "Processed " .. math.min(batchEnd, playerCount) .. "/" .. playerCount .. 
+                Tasks.message = "Processed " .. math.min(batchEnd, playerCount) .. "/" .. playerCount ..
                     " players (" .. count .. " added this batch: " .. batchCount .. ")"
-                
-                -- Force GC and yield
+
+                -- Force GC, yield, and run GC again
                 Parsers.ForceGarbageCollection(true)
                 coroutine.yield()
+                collectgarbage("collect")
+                
+                -- Clear local variables to help GC
+                batchCount = nil
             end
-            
-            -- Clear the players table to free memory
-            data.players = nil
+
+            -- Clear all references to players
+            players = nil
         else
             print("[Database Fetcher] Failed to parse TF2DB format JSON from " .. source.name)
         end
+        
+        -- Clear weakData reference
+        weakData = nil
     end
-    
+
     -- Wait a bit after processing to stabilize game before next source
     Tasks.message = "Finished processing " .. source.name .. " (added " .. count .. " entries)"
     Tasks.Sleep(500)
-    
-    -- Run GC before returning
+
+    -- Run multiple GC passes before returning
     Parsers.ForceGarbageCollection(true)
-    
+    Tasks.Sleep(100)
+    collectgarbage("collect")
+
     print(string.format("[Database Fetcher] Added %d entries from %s", count, source.name))
-    return count
+    
+    -- Return value, all other locals should be cleared
+    local result = count
+    count = nil
+    return result
 end
 
 return Parsers

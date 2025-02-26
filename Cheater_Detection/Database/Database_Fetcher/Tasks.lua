@@ -28,11 +28,27 @@ function Tasks.Sleep(ms)
     end
 end
 
+-- Add proper task tracking for accurate percentages
+Tasks.TaskTracking = {
+    totalTasks = 0,         -- Total tasks in this run
+    completedTasks = 0,     -- Number of completed tasks
+    sourceCount = 0,        -- Total number of sources
+    currentSource = 0       -- Current source being processed
+}
+
 -- Add a task to the queue with enhanced error checking
-function Tasks.Add(taskFn, description, weight)
+function Tasks.Add(taskFn, description, weight, sourceInfo)
     if type(taskFn) ~= "function" then
         print("[Tasks] Error: Attempted to add non-function task")
         return -1
+    end
+    
+    -- Track this task in our total count
+    Tasks.TaskTracking.totalTasks = Tasks.TaskTracking.totalTasks + 1
+    
+    -- Track source info if provided
+    if sourceInfo and sourceInfo.isSource then
+        Tasks.TaskTracking.sourceCount = Tasks.TaskTracking.sourceCount + 1
     end
     
     local co = coroutine.create(taskFn)
@@ -45,7 +61,8 @@ function Tasks.Add(taskFn, description, weight)
         co = co,
         description = description or "Unknown task",
         weight = weight or 1,
-        created = globals.RealTime()
+        created = globals.RealTime(),
+        sourceInfo = sourceInfo
     })
 
     -- Start processing if not already running
@@ -69,13 +86,37 @@ function Tasks.Reset()
     Tasks.completionTime = 0
     Tasks.silent = false
     
-    -- Force garbage collection
+    -- Reset task tracking
+    Tasks.TaskTracking.totalTasks = 0
+    Tasks.TaskTracking.completedTasks = 0
+    Tasks.TaskTracking.sourceCount = 0
+    Tasks.TaskTracking.currentSource = 0
+    
+    -- Force multiple garbage collections
     collectgarbage("stop")  -- Disable automatic collection
+    collectgarbage("collect")
     collectgarbage("collect")
     collectgarbage("restart")
     
     -- Unregister any lingering callbacks
     callbacks.Unregister("Draw", "CDTasks_Complete")
+    
+    -- Special case: reset any pending weak tables
+    if Tasks.weakTables then
+        for k in pairs(Tasks.weakTables) do
+            Tasks.weakTables[k] = nil
+        end
+    end
+    
+    -- Create weak tables repository if it doesn't exist
+    Tasks.weakTables = Tasks.weakTables or setmetatable({}, {__mode = "v"})
+end
+
+-- Create weak table for temporary data that should be GC'ed quickly
+function Tasks.CreateWeakTable()
+    local tbl = setmetatable({}, {__mode = "v"})
+    table.insert(Tasks.weakTables, tbl)
+    return tbl
 end
 
 -- Optimized task processing function to prevent ruRBtree overflow
@@ -108,6 +149,11 @@ function Tasks.Process()
         Tasks.current = table.remove(Tasks.queue, 1)
         Tasks.status = "running"
         Tasks.message = "Processing: " .. Tasks.current.description
+        
+        -- Track source changes for percentage calculation
+        if Tasks.current.sourceInfo and Tasks.current.sourceInfo.isSource then
+            Tasks.TaskTracking.currentSource = Tasks.TaskTracking.currentSource + 1
+        end
     end
 
     -- If we have a current task, resume it
@@ -128,17 +174,34 @@ function Tasks.Process()
                 
                 -- Force GC after an error to clean up
                 collectgarbage("collect")
+                collectgarbage("collect")
                 
                 -- Set completion time for timeout
                 Tasks.completionTime = globals.RealTime()
             elseif coroutine.status(co) == "dead" then
                 -- Task completed
+                Tasks.TaskTracking.completedTasks = Tasks.TaskTracking.completedTasks + 1
                 local completedTask = Tasks.current
                 Tasks.current = nil
                 
-                -- Update progress
-                local totalTasks = #Tasks.queue
-                Tasks.progress = math.min(100, math.floor((1 - totalTasks / (totalTasks + 1)) * 100))
+                -- Calculate percentage based on completed tasks
+                if Tasks.TaskTracking.totalTasks > 0 then
+                    -- Base percentage on both task completion and source completion
+                    local taskPercentage = Tasks.TaskTracking.completedTasks / Tasks.TaskTracking.totalTasks
+                    local sourcePercentage = 0
+                    
+                    -- If we have sources, weight the percentage by source completion
+                    if Tasks.TaskTracking.sourceCount > 0 then
+                        sourcePercentage = Tasks.TaskTracking.currentSource / Tasks.TaskTracking.sourceCount
+                        -- Combined percentage, weighted 70% for sources, 30% for tasks
+                        Tasks.progress = math.floor((sourcePercentage * 0.7 + taskPercentage * 0.3) * 100)
+                    else
+                        -- Just use task percentage
+                        Tasks.progress = math.floor(taskPercentage * 100)
+                    end
+                else
+                    Tasks.progress = 0
+                end
                 
                 -- Check if we're done with all tasks
                 if #Tasks.queue == 0 then
@@ -156,8 +219,18 @@ function Tasks.Process()
                         pcall(callbackToRun, result) -- Run with error handling
                     end
                     
-                    -- Force GC after completion
+                    -- Force aggressive GC after completion
+                    collectgarbage("stop")
                     collectgarbage("collect")
+                    collectgarbage("collect")
+                    collectgarbage("restart")
+                    
+                    -- Clear weak tables
+                    if Tasks.weakTables then
+                        for k in pairs(Tasks.weakTables) do
+                            Tasks.weakTables[k] = nil
+                        end
+                    end
                 end
             end
         else
@@ -309,7 +382,7 @@ function Tasks.DrawProgressUI()
     draw.FilledRect(x + padding, barY, progressEnd, barY + 2)
     
     -- Progress percentage text
-    local percent = string.format("%d%%", Tasks.progress)
+    local percent = string.format("%d%%", math.min(Tasks.progress, 100))
     local percentWidth = draw.GetTextSize(percent)
     percentWidth = math.floor(percentWidth)
     
