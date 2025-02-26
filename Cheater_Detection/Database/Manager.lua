@@ -1,4 +1,4 @@
---[[ 
+--[[
     Database Manager module - Centralized control of database operations
     Allows for easy initialization, updating, and management of databases
 ]]
@@ -13,31 +13,31 @@ local Manager = {}
 
 -- Configuration options
 Manager.Config = {
-    AutoFetchOnLoad = true,  -- Automatically fetch database updates on script load
-    CheckInterval = 24,      -- How often to automatically check for updates (in hours)
-    LastCheck = 0,           -- Timestamp of last update check
-    MaxEntries = 20000,      -- Maximum number of database entries (performance optimization)
+    AutoFetchOnLoad = true, -- Automatically fetch database updates on script load
+    CheckInterval = 24,     -- How often to automatically check for updates (in hours)
+    LastCheck = 0,          -- Timestamp of last update check
+    MaxEntries = 20000,     -- Maximum number of database entries (performance optimization)
 }
 
 -- Initialize database system completely
 function Manager.Initialize(options)
     options = options or {}
-    
+
     -- Override default config with provided options
     for k, v in pairs(options) do
         Manager.Config[k] = v
     end
-    
+
     -- Load local database first
     local startTime = globals.RealTime()
     Database.LoadDatabase(false) -- Not silent, show loading message
-    
+
     -- If auto-fetch is enabled, set up fetcher
     if Manager.Config.AutoFetchOnLoad then
         -- Configure fetcher
         Fetcher.Config.AutoFetchOnLoad = true
         Fetcher.Config.NotifyOnFetchComplete = true
-        
+
         -- Schedule fetch for next frame to ensure everything is loaded
         local firstUpdateDone = false
         callbacks.Register("Draw", "CDDatabaseManager_InitialFetch", function()
@@ -48,7 +48,7 @@ function Manager.Initialize(options)
             end
         end)
     end
-    
+
     -- Return the fully initialized database
     return Database
 end
@@ -63,17 +63,17 @@ function Manager.ForceUpdate()
     Database.FetchUpdates(false)
 end
 
--- Get database stats 
+-- Get database stats
 function Manager.GetStats()
     local entries = 0
     local byType = {}
-    
+
     for steamId, data in pairs(Database.content or {}) do
         entries = entries + 1
         local cause = data.cause or "Unknown"
         byType[cause] = (byType[cause] or 0) + 1
     end
-    
+
     return {
         totalEntries = entries,
         byType = byType,
@@ -104,16 +104,16 @@ Commands.Register("cd_cleanup", function()
         print("[Database Manager] No database loaded")
         return
     end
-    
+
     local beforeCount = 0
     for _ in pairs(Database.content) do
         beforeCount = beforeCount + 1
     end
-    
+
     -- Keep track of entries to remove
     local toRemove = {}
     local twoWeeksAgo = os.time() - (14 * 24 * 60 * 60) -- 14 days ago
-    
+
     -- Find old entries
     for steamId, data in pairs(Database.content) do
         -- If entry has a date, check if it's older than 2 weeks
@@ -126,16 +126,18 @@ Commands.Register("cd_cleanup", function()
                     year = tonumber(year),
                     month = tonumber(month),
                     day = tonumber(day),
-                    hour = 0, min = 0, sec = 0
+                    hour = 0,
+                    min = 0,
+                    sec = 0
                 })
-                
+
                 -- Exclude certain categories from cleanup
                 local keepCause = data.cause and (
                     data.cause:match("Bot") or
                     data.cause:match("RGL") or
                     data.cause:match("Community")
                 )
-                
+
                 -- Mark for removal if old and not a special case
                 if entryTime < twoWeeksAgo and not keepCause then
                     table.insert(toRemove, steamId)
@@ -143,22 +145,22 @@ Commands.Register("cd_cleanup", function()
             end
         end
     end
-    
+
     -- Remove old entries
     for _, steamId in ipairs(toRemove) do
         Database.content[steamId] = nil
     end
-    
+
     -- Save the cleaned database
     Database.SaveDatabase()
-    
+
     -- Count entries after cleanup
     local afterCount = 0
     for _ in pairs(Database.content) do
         afterCount = afterCount + 1
     end
-    
-    print(string.format("[Database Manager] Removed %d old entries, keeping %d entries", 
+
+    print(string.format("[Database Manager] Removed %d old entries, keeping %d entries",
         beforeCount - afterCount, afterCount))
 end, "Remove old database entries to improve performance")
 

@@ -123,7 +123,7 @@ function Tasks.CancelAll()
     print("[Database Fetcher] All tasks cancelled")
 end
 
--- Debug function to print task status
+-- Debug function to print task statusF
 function Tasks.PrintDebug()
     print("Tasks Status: " .. Tasks.status)
     print("Is Running: " .. tostring(Tasks.isRunning))

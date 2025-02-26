@@ -204,7 +204,7 @@ local function RegisterCommands()
             -- Toggle mode
             Fetcher.Config.AutoFetchOnLoad = not Fetcher.Config.AutoFetchOnLoad
             print("[Database Fetcher] Auto-fetch on load: " ..
-            (Fetcher.Config.AutoFetchOnLoad and "ENABLED" or "DISABLED"))
+                (Fetcher.Config.AutoFetchOnLoad and "ENABLED" or "DISABLED"))
         end
     end, "Toggle auto-fetch on script load")
 
