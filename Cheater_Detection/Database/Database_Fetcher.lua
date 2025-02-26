@@ -1,6 +1,7 @@
 --[[
     Database_Fetcher.lua
     Fetches cheater databases from online sources using coroutines to avoid game freezing
+    Processes sources one at a time with configurable batch sizes and delays
 ]]
 
 -- Import required modules
@@ -14,21 +15,40 @@ local Sources = require("Cheater_Detection.Database.Database_Fetcher.Sources")
 local Parsers = require("Cheater_Detection.Database.Database_Fetcher.Parsers")
 
 -- Create fetcher object
-local Fetcher = {}
-
--- Configuration options
-Fetcher.Config = {
-    AutoFetchOnLoad = false,           -- Auto fetch when script loads
-    AutoSaveAfterFetch = true,         -- Automatically save database after fetching
-    NotifyOnFetchComplete = true,      -- Show notifications when fetch completes
-    ShowProgressBar = true,            -- Show the progress bar during fetch
-    AutoFetchInterval = 0,             -- Time in minutes between auto-fetches (0 = disabled)
-    LastAutoFetch = 0                  -- Timestamp of last auto-fetch
+local Fetcher = {
+    -- Configuration options
+    Config = {
+        AutoFetchOnLoad = false,       -- Auto fetch when script loads
+        AutoSaveAfterFetch = true,     -- Automatically save database after fetching
+        NotifyOnFetchComplete = true,  -- Show notifications when fetch completes
+        ShowProgressBar = true,        -- Show the progress bar during fetch
+        AutoFetchInterval = 0,         -- Time in minutes between auto-fetches (0 = disabled)
+        LastAutoFetch = 0,             -- Timestamp of last auto-fetch
+        ProcessOneSourceAtTime = true, -- Process one source at a time (recommended)
+        SourceDelay = 5,               -- Seconds to wait between sources
+        BatchSize = 500                -- Lines to process in each batch
+    },
+    
+    -- State
+    State = {
+        currentSourceIndex = 0,
+        totalSources = 0,
+        totalAdded = 0,
+        processingComplete = false
+    }
 }
 
 -- Export needed components
 Fetcher.Tasks = Tasks
 Fetcher.Sources = Sources.List
+Fetcher.Parsers = Parsers
+
+-- Apply configuration to parser
+function Fetcher.ApplyConfig()
+    -- Apply fetcher config to parser config
+    Parsers.Config.BatchSize = Fetcher.Config.BatchSize
+    Parsers.Config.SourceDelay = Fetcher.Config.SourceDelay * 1000 -- Convert to milliseconds
+end
 
 -- Non-coroutine fetch wrapper function for compatibility with existing code
 function Fetcher.FetchSource(source, database)
@@ -42,7 +62,7 @@ function Fetcher.FetchSource(source, database)
     return Parsers.FetchSource(source, database)
 end
 
--- Main fetch all function that uses coroutines
+-- Main fetch all function that processes one source at a time
 function Fetcher.FetchAll(database, callback, silent)
     -- If tasks are already running, don't start new ones
     if Tasks.isRunning then
@@ -51,40 +71,52 @@ function Fetcher.FetchAll(database, callback, silent)
         end
         return false
     end
-
+    
+    -- Apply configuration
+    Fetcher.ApplyConfig()
+    
     -- Initialize
     database = database or {}
     database.content = database.content or {}
-
-    -- Set callback to run when all tasks complete
-    Tasks.callback = callback
-
+    
+    -- Reset state
+    Fetcher.State.currentSourceIndex = 0
+    Fetcher.State.totalSources = #Fetcher.Sources
+    Fetcher.State.totalAdded = 0
+    Fetcher.State.processingComplete = false
+    
     -- Clear any existing tasks
-    Tasks.queue = {}
-    Tasks.current = nil
+    Tasks.Reset()
+    Tasks.callback = callback
     Tasks.isRunning = true
     Tasks.status = "initializing"
     Tasks.progress = 0
     Tasks.message = "Preparing to fetch sources..."
     Tasks.silent = silent or false
-    Tasks.smoothProgress = 0  -- Initialize smoothProgress for UI
-
-    local totalAdded = 0
-
-    -- Add a task for each source
-    for i, source in ipairs(Fetcher.Sources) do
+    Tasks.smoothProgress = 0
+    
+    -- If processing one source at a time
+    if Fetcher.Config.ProcessOneSourceAtTime then
+        -- Add task to process the next source
         Tasks.Add(function()
-            local count = Parsers.CoFetchSource(source, database)
-            totalAdded = totalAdded + count
-            return count
-        end, "Fetching " .. source.name, 1)
-    end
+            return Fetcher.ProcessNextSource(database)
+        end, "Starting fetch process", 1)
+    else
+        -- Legacy mode: queue all sources at once
+        for i, source in ipairs(Fetcher.Sources) do
+            Tasks.Add(function()
+                local count = Parsers.CoFetchSource(source, database)
+                Fetcher.State.totalAdded = Fetcher.State.totalAdded + count
+                return count
+            end, "Fetching " .. source.name, 1)
+        end
 
-    -- Final task to save the database
-    Tasks.Add(function()
-        Tasks.message = "Processing complete! Added " .. totalAdded .. " entries."
-        return totalAdded
-    end, "Finalizing", 0.5)
+        -- Final task to save the database
+        Tasks.Add(function()
+            Tasks.message = "Processing complete! Added " .. Fetcher.State.totalAdded .. " entries."
+            return Fetcher.State.totalAdded
+        end, "Finalizing", 0.5)
+    end
 
     if not silent then
         print(string.format("[Database Fetcher] Queued %d sources for fetching", #Fetcher.Sources))
@@ -92,6 +124,31 @@ function Fetcher.FetchAll(database, callback, silent)
 
     -- Return immediately, the tasks will run across frames
     return true
+end
+
+-- Process the next source in the list
+function Fetcher.ProcessNextSource(database)
+    Fetcher.State.currentSourceIndex = Fetcher.State.currentSourceIndex + 1
+
+    if Fetcher.State.currentSourceIndex > Fetcher.State.totalSources then
+        Fetcher.State.processingComplete = true
+        Tasks.message = "Processing complete! Added " .. Fetcher.State.totalAdded .. " entries."
+        return Fetcher.State.totalAdded
+    end
+
+    local source = Fetcher.Sources[Fetcher.State.currentSourceIndex]
+    Tasks.message = "Fetching " .. source.name
+
+    local count = Parsers.CoFetchSource(source, database)
+    Fetcher.State.totalAdded = Fetcher.State.totalAdded + count
+
+    if Fetcher.State.currentSourceIndex < Fetcher.State.totalSources then
+        Tasks.Add(function()
+            return Fetcher.ProcessNextSource(database)
+        end, "Waiting for next source", Fetcher.Config.SourceDelay)
+    end
+
+    return count
 end
 
 -- Auto-fetch handler - can be triggered on load or periodically
@@ -283,7 +340,7 @@ local function RegisterCommands()
     end, "Cancel any ongoing database fetch operations")
 end
 
--- Draw callback to process tasks and render a stylish progress indicator
+-- Draw callback to process tasks and render progress indicator
 local function OnDraw()
     -- Always process tasks if we're running
     if Tasks.isRunning then
@@ -291,153 +348,8 @@ local function OnDraw()
 
         -- Draw progress indicator if enabled and not in silent mode
         if Fetcher.Config.ShowProgressBar and not Tasks.silent and Tasks.status ~= "idle" then
-            -- Set up basic dimensions and styles
-            local x, y = 15, 15
-            local width = 260
-            local height = 70
-            local padding = 10
-            local barHeight = 12
-            local cornerRadius = 6
-            -- Calculate pulsing effect and ensure it's an integer for draw calls
-            local pulseValue = math.sin(globals.RealTime() * 4) * 0.2 + 0.8 -- Value between 0.6 and 1.0
-            local pulseFactor = math.floor(pulseValue * 100) / 100          -- Keep precision but without float errors
-
-            -- Calculate smooth progress (to avoid jumpy bar)
-            local targetProgress = Tasks.progress / 100
-            if not Tasks.smoothProgress then Tasks.smoothProgress = 0 end
-            Tasks.smoothProgress = Tasks.smoothProgress + (targetProgress - Tasks.smoothProgress) * 0.1
-
-            -- Ensure all drawing coordinates are integers to prevent cursor bit overflow
-            x, y = math.floor(x), math.floor(y)
-            width, height = math.floor(width), math.floor(height)
-            padding, barHeight = math.floor(padding), math.floor(barHeight)
-            cornerRadius = math.floor(cornerRadius)
-
-            -- Draw panel background with rounded corners
-            -- Main background
-            draw.Color(20, 20, 20, 220)
-            draw.FilledRect(x + cornerRadius, y, x + width - cornerRadius, y + height) -- Main rectangle
-            draw.FilledRect(x, y + cornerRadius, x + width, y + height - cornerRadius) -- Vertical fill
-
-            -- Draw the corners
-            draw.OutlinedCircle(x + cornerRadius, y + cornerRadius, cornerRadius, 12)
-            draw.OutlinedCircle(x + width - cornerRadius, y + cornerRadius, cornerRadius, 12)
-            draw.OutlinedCircle(x + cornerRadius, y + height - cornerRadius, cornerRadius, 12)
-            draw.OutlinedCircle(x + width - cornerRadius, y + height - cornerRadius, cornerRadius, 12)
-
-            -- Fill the corners (ensure all coordinates are integers)
-            draw.Color(20, 20, 20, 220)
-            for i = 0, cornerRadius do
-                draw.FilledRect(x, y + cornerRadius - i, x + cornerRadius - i, y + cornerRadius + 1)
-                draw.FilledRect(x + width - cornerRadius + i, y + cornerRadius - i, x + width, y + cornerRadius + 1)
-                draw.FilledRect(x, y + height - cornerRadius - 1, x + cornerRadius - i, y + height - cornerRadius + i)
-                draw.FilledRect(x + width - cornerRadius + i, y + height - cornerRadius - 1, x + width,
-                    y + height - cornerRadius + i)
-            end
-
-            -- Outer glow effect
-            local glowSize = 8
-            local glowAlpha = math.floor(40 * pulseFactor)
-            for i = 1, glowSize do
-                local alpha = math.floor(glowAlpha * (1 - i / glowSize))
-                draw.Color(100, 150, 255, alpha)
-                draw.OutlinedRect(x - i, y - i, x + width + i, y + height + i)
-            end
-
-            -- Top border highlight
-            draw.Color(60, 120, 255, 180)
-            draw.FilledRect(x + cornerRadius, y, x + width - cornerRadius, y + 2)
-
-            -- Title text with shadow
-            draw.SetFont(draw.CreateFont("Verdana", 16, 800, FONTFLAG_ANTIALIAS))
-
-            local title = "Database Fetcher"
-            local titleWidth, titleHeight = draw.GetTextSize(title)
-            titleWidth, titleHeight = math.floor(titleWidth), math.floor(titleHeight)
-
-            -- Draw fancy title background
-            draw.Color(40, 100, 220, 60)
-            draw.FilledRect(x + padding - 2, y + padding - 2, x + padding + titleWidth + 2, y + padding + titleHeight + 2)
-
-            -- Draw text shadow
-            draw.Color(0, 0, 0, 180)
-            draw.Text(x + padding + 1, y + padding + 1, title)
-
-            -- Draw text
-            draw.Color(120, 200, 255, 255)
-            draw.Text(x + padding, y + padding, title)
-
-            -- Task status message
-            draw.SetFont(draw.CreateFont("Verdana", 12, 400, FONTFLAG_ANTIALIAS))
-            local message = Tasks.message
-
-            -- Truncate message if too long
-            local msgWidth = draw.GetTextSize(message)
-            msgWidth = math.floor(msgWidth)
-
-            if msgWidth > width - 2 * padding - 40 then
-                local truncated = message
-                while draw.GetTextSize(truncated .. "...") > width - 2 * padding - 40 do
-                    truncated = truncated:sub(1, -2)
-                end
-                message = truncated .. "..."
-            end
-
-            -- Draw message text with shadow
-            draw.Color(0, 0, 0, 150)
-            draw.Text(x + padding + 1, y + padding + titleHeight + 5, message)
-
-            draw.Color(255, 255, 255, 255)
-            draw.Text(x + padding, y + padding + titleHeight + 4, message)
-
-            -- Progress bar background with rounded corners
-            local barY = y + height - padding - barHeight
-            draw.Color(40, 40, 40, 200)
-            draw.FilledRect(x + padding, barY, x + width - padding, barY + barHeight)
-
-            -- Progress bar fill with gradient
-            local progressWidth = math.floor((width - 2 * padding) * Tasks.smoothProgress)
-            local progressEnd = math.floor(x + padding + progressWidth) -- Ensure integer
-
-            -- Progress gradient - blue to cyan
-            draw.Color(30, 120, 255, 255)
-            draw.FilledRectFade(
-                x + padding, barY,
-                progressEnd, barY + barHeight,
-                255, 180, true
-            )
-
-            -- Highlight on top of progress bar
-            draw.Color(150, 230, 255, 100)
-            draw.FilledRect(x + padding, barY, progressEnd, barY + 2)
-
-            -- Progress percentage text
-            local percent = string.format("%d%%", Tasks.progress)
-            local percentWidth = draw.GetTextSize(percent)
-            percentWidth = math.floor(percentWidth)
-
-            draw.Color(0, 0, 0, 150)
-            draw.Text(x + width - padding - percentWidth + 1, barY + 1, percent)
-
-            draw.Color(255, 255, 255, 255)
-            draw.Text(x + width - padding - percentWidth, barY, percent)
-
-            -- Add animated glow at the progress edge
-            if progressWidth > 0 then
-                local glowPos = math.floor(x + padding + progressWidth) -- Ensure integer
-                local pulseAlpha = math.floor(120 * pulseFactor)
-                draw.Color(220, 240, 255, pulseAlpha)
-                draw.FilledRect(glowPos - 2, barY, glowPos + 2, barY + barHeight)
-            end
-            
-            -- If task is completed, show completion message
-            if Tasks.completionTime > 0 then
-                local timeLeft = math.ceil(2.0 - (globals.RealTime() - Tasks.completionTime))
-                local closeMsg = string.format("Closing in %d...", timeLeft)
-                
-                draw.Color(255, 255, 255, 200)
-                draw.Text(x + width - padding - draw.GetTextSize(closeMsg), y + padding, closeMsg)
-            end
+            -- Use the built-in draw progress UI function
+            Tasks.DrawProgressUI()
         end
     end
     

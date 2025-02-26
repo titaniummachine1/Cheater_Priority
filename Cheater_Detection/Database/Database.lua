@@ -1,198 +1,286 @@
---[[ Imports ]]
+--[[
+    Simplified Database.lua
+    Direct implementation of database functionality using native Lua tables
+    Stores only essential data: name and proof for each SteamID64
+]]
+
 local Common = require("Cheater_Detection.Utils.Common")
 local G = require("Cheater_Detection.Utils.Globals")
+local Json = Common.Json
 local Database_import = require("Cheater_Detection.Database.Database_Import")
 local Database_Fetcher = require("Cheater_Detection.Database.Database_Fetcher")
 
-local Database = {}
+local Database = {
+    -- Internal data storage (direct table)
+    data = {},
 
-Database.content = {}
+    -- Configuration
+    Config = {
+        AutoSave = true,
+        SaveInterval = 300, -- 5 minutes
+        DebugMode = false,
+        MaxEntries = 15000  -- Maximum entries to prevent memory issues
+    },
 
-local Json = Common.Json
+    -- State tracking
+    State = {
+        entriesCount = 0,
+        isDirty = false,
+        lastSave = 0
+    }
+}
 
-local Lua__fullPath = GetScriptName()
-local Lua__fileName = Lua__fullPath:match("\\([^\\]-)$"):gsub("%.lua$", "")
-local folder_name = string.format([[Lua %s]], Lua__fileName)
+-- Create the content accessor with metatable for cleaner API
+Database.content = setmetatable({}, {
+    __index = function(_, key)
+        return Database.data[key]
+    end,
 
-function Database.GetFilePath()
-    local success, fullPath = filesystem.CreateDirectory(folder_name)
-    return tostring(fullPath .. "/database.json")
+    __newindex = function(_, key, value)
+        Database.HandleSetEntry(key, value)
+    end,
+
+    __pairs = function()
+        return pairs(Database.data)
+    end
+})
+
+-- Handle setting an entry with proper counting
+function Database.HandleSetEntry(key, value)
+    -- Count entries if adding/removing
+    if (Database.data[key] == nil) and value ~= nil then
+        Database.State.entriesCount = Database.State.entriesCount + 1
+    elseif (Database.data[key] ~= nil) and value == nil then
+        Database.State.entriesCount = Database.State.entriesCount - 1
+    end
+
+    -- Simplified data structure - keep only what's needed
+    if value ~= nil then
+        -- Ensure we only store essential data
+        local minimalValue = {
+            Name = type(value) == "table" and (value.Name or "Unknown") or "Unknown",
+            proof = type(value) == "table" and (value.proof or value.cause or "Unknown") or "Unknown"
+        }
+        Database.data[key] = minimalValue
+    else
+        Database.data[key] = nil
+    end
+
+    Database.State.isDirty = true
+
+    -- Auto-save if enabled and enough time has passed
+    if Database.Config.AutoSave then
+        local currentTime = os.time()
+        if currentTime - Database.State.lastSave >= Database.Config.SaveInterval then
+            Database.SaveDatabase()
+        end
+    end
 end
 
-function Database.SaveDatabase(DataBaseTable)
-    DataBaseTable = DataBaseTable or Database.content
-    local filepath = Database.GetFilePath()
+-- Find best path for database storage
+function Database.GetFilePath()
+    local possibleFolders = {
+        "Lua Cheater_Detection",
+        "Lua Scripts/Cheater_Detection",
+        "lbox/Cheater_Detection",
+        "lmaobox/Cheater_Detection",
+        "."
+    }
+
+    -- Try to access or create folders
+    for _, folder in ipairs(possibleFolders) do
+        local success = pcall(filesystem.CreateDirectory, folder)
+        if success then
+            -- Directory exists or was created successfully
+            return folder .. "/database.json"
+        end
+    end
+
+    -- Last resort
+    return "./database.json"
+end
+
+-- Save database to disk
+function Database.SaveDatabase()
+    local filePath = Database.GetFilePath()
 
     -- Open file for writing
-    local file = io.open(filepath, "w")
+    local file = io.open(filePath, "w")
     if not file then
-        print("[Database] Failed to open file for saving")
+        print("[Database] Failed to open file for writing: " .. filePath)
         return false
     end
 
-    -- Prepare data
-    local uniqueDataBase = {}
-    for steamId, data in pairs(DataBaseTable) do
-        -- Skip any entries that aren't valid
-        if type(steamId) == "string" and type(data) == "table" then
-            uniqueDataBase[steamId] = data
-        end
+    -- Write the data
+    local jsonData = Json.encode(Database.data)
+    file:write(jsonData)
+    file:close()
+
+    -- Update state
+    Database.State.isDirty = false
+    Database.State.lastSave = os.time()
+
+    if Database.Config.DebugMode then
+        print(string.format("[Database] Saved %d entries to %s", Database.State.entriesCount, filePath))
     end
 
-    -- Encode and save
-    local serializedDatabase = Json.encode(uniqueDataBase)
-    if serializedDatabase then
-        file:write(serializedDatabase)
-        file:close()
-        return true
-    else
-        file:close()
-        print("[Database] Failed to encode database")
-        return false
-    end
+    return true
 end
 
--- Modify the loadDatabase function to accept a 'silent' parameter
+-- Load database from disk
 function Database.LoadDatabase(silent)
-    local filepath = Database.GetFilePath()
-    local file, err = io.open(filepath, "r")
+    local filePath = Database.GetFilePath()
 
-    if file then
-        local content = file:read("*a")
-        file:close()
-
-        local loadedDatabase, pos, decodeErr = Json.decode(content, 1)
-
-        if decodeErr then
-            if not silent then
-                print("Error loading database:", decodeErr)
-            end
-            Database.content = {}
-            return false
-        else
-            if not silent then
-                printc(0, 255, 140, 255, "[" .. os.date("%H:%M:%S") .. "] Loaded Database from " .. tostring(filepath))
-            end
-            Database.content = loadedDatabase or {}
-            return true
-        end
-    else
+    -- Try to open file
+    local file = io.open(filePath, "r")
+    if not file then
         if not silent then
-            print("Failed to load database. Error: " .. tostring(err))
+            print("[Database] Database file not found: " .. filePath)
         end
-        Database.content = {}
         return false
     end
+
+    -- Read and parse content
+    local content = file:read("*a")
+    file:close()
+
+    local success, data = pcall(Json.decode, content)
+    if not success or type(data) ~= "table" then
+        if not silent then
+            print("[Database] Failed to decode database file")
+        end
+        return false
+    end
+
+    -- Reset and load data
+    Database.data = {}
+    Database.State.entriesCount = 0
+
+    -- Copy data with minimal structure - enforce entry limit
+    local entriesAdded = 0
+    for steamID, value in pairs(data) do
+        if entriesAdded < Database.Config.MaxEntries then
+            Database.data[steamID] = {
+                Name = type(value) == "table" and (value.Name or "Unknown") or "Unknown",
+                proof = type(value) == "table" and (value.proof or value.cause or "Unknown") or "Unknown"
+            }
+            Database.State.entriesCount = Database.State.entriesCount + 1
+            entriesAdded = entriesAdded + 1
+        else
+            break
+        end
+    end
+
+    -- Clean up memory
+    collectgarbage("collect")
+
+    -- Update state
+    Database.State.isDirty = false
+    Database.State.lastSave = os.time()
+
+    if not silent then
+        printc(0, 255, 140, 255, "[" .. os.date("%H:%M:%S") .. "] Loaded Database with " ..
+            Database.State.entriesCount .. " entries")
+    end
+
+    return true
 end
 
+-- Get a player record
 function Database.GetRecord(steamId)
     return Database.content[steamId]
 end
 
-function Database.GetStrikes(steamId)
-    if not steamId or not Database.content[steamId] then
-        return 0
-    end
-    return tonumber(Database.content[steamId].strikes) or 0
-end
-
+-- Get proof for a player
 function Database.GetProof(steamId)
-    if not steamId or not Database.content[steamId] then
-        return "Unknown"
-    end
-    return Database.content[steamId].proof or "Unknown"
+    local record = Database.content[steamId]
+    return record and record.proof or "Unknown"
 end
 
-function Database.GetDate(steamId)
-    if not steamId or not Database.content[steamId] then
-        return os.date("%Y-%m-%d %H:%M:%S")
-    end
-    return Database.content[steamId].date
+-- Get name for a player
+function Database.GetName(steamId)
+    local record = Database.content[steamId]
+    return record and record.Name or "Unknown"
 end
 
+-- Check if player is in database
+function Database.Contains(steamId)
+    return Database.data[steamId] ~= nil
+end
+
+-- Set a player as suspect
 function Database.SetSuspect(steamId, data)
-    if not steamId or not data then return end
+    if not steamId then return end
 
-    Database.content[steamId] = data
+    -- Create minimal data structure
+    local minimalData = {
+        Name = (data and data.Name) or "Unknown",
+        proof = (data and (data.proof or data.cause)) or "Unknown"
+    }
+
+    -- Store data
+    Database.content[steamId] = minimalData
 
     -- Also set priority in playerlist
-    if data.priority then
-        playerlist.SetPriority(steamId, data.priority)
-    else
-        -- Default to priority 10 for cheaters
-        playerlist.SetPriority(steamId, 10)
-    end
+    playerlist.SetPriority(steamId, 10)
 end
 
+-- Clear a player from suspect list
 function Database.ClearSuspect(steamId)
     if Database.content[steamId] then
         Database.content[steamId] = nil
-        -- Also reset priority in playerlist if desired
         playerlist.SetPriority(steamId, 0)
     end
 end
 
--- Save when unloaded
-local function OnUnload()
-    if Database.content then
-        if G.Menu and G.Menu.Main and G.Menu.Main.debug then
-            local localPlayer = entities.GetLocalPlayer()
-            if localPlayer then
-                Database.ClearSuspect(Common.GetSteamID64(localPlayer))
-            end
-        end
-
-        Database.SaveDatabase(Database.content)
+-- Get database stats
+function Database.GetStats()
+    -- Count entries by proof type
+    local proofStats = {}
+    for steamID, entry in pairs(Database.data) do
+        local proof = entry.proof or "Unknown"
+        proofStats[proof] = (proofStats[proof] or 0) + 1
     end
+
+    return {
+        entryCount = Database.State.entriesCount,
+        isDirty = Database.State.isDirty,
+        lastSave = Database.State.lastSave,
+        memoryMB = collectgarbage("count") / 1024,
+        proofTypes = proofStats
+    }
 end
 
--- Initialize the database
-local function InitializeDatabase()
-    -- Load the existing database first
-    local loadSuccess = Database.LoadDatabase()
-    
-    -- Track entry count before import
-    local beforeCount = 0
-    for _ in pairs(Database.content) do
-        beforeCount = beforeCount + 1
-    end
-    
+-- Import function for database updating
+function Database.ImportDatabase()
+    -- Simple import from Database_import module
+    local beforeCount = Database.State.entriesCount
+
     -- Import additional data
     Database_import.importDatabase(Database)
-    
+
     -- Count entries after import
-    local afterCount = 0
-    for _ in pairs(Database.content) do
-        afterCount = afterCount + 1
-    end
-    
+    local afterCount = Database.State.entriesCount
+
     -- Show a summary of the import
     local newEntries = afterCount - beforeCount
     if newEntries > 0 then
         printc(255, 255, 0, 255, string.format("[Database] Imported %d new entries from external sources", newEntries))
-    end
-    
-    -- Save combined database only if we have entries or imports
-    if afterCount > 0 then
+
+        -- Save the updated database
         if Database.SaveDatabase() then
             printc(100, 255, 100, 255, string.format("[Database] Saved database with %d total entries", afterCount))
         end
     end
-    
-    -- Check if Database_Fetcher is available and has auto-fetch enabled
-    pcall(function()
-        local Fetcher = Database_Fetcher
-        if Fetcher and Fetcher.Config and Fetcher.Config.AutoFetchOnLoad then
-            Fetcher.AutoFetch(Database)
-        end
-    end)
+
+    return newEntries
 end
 
 -- Add utility functions to trigger fetching
 function Database.FetchUpdates(silent)
     if Database_Fetcher then
         return Database_Fetcher.FetchAll(Database, function(totalAdded)
-            if totalAdded > 0 then
+            if totalAdded and totalAdded > 0 then
                 Database.SaveDatabase()
                 if not silent then
                     printc(0, 255, 0, 255, "[Database] Updated with " .. totalAdded .. " new entries")
@@ -214,9 +302,158 @@ function Database.AutoUpdate()
     return Database.FetchUpdates(true)
 end
 
+-- Clean database by removing least important entries
+function Database.Cleanup(maxEntries)
+    maxEntries = maxEntries or Database.Config.MaxEntries
+    
+    -- If we're under the limit, no need to clean
+    if Database.State.entriesCount <= maxEntries then
+        return 0
+    end
+    
+    -- Create a priority list for entries to keep
+    local priorities = {
+        -- Highest priority to keep (exact string matching)
+        "RGL", "Bot", "Pazer List", "Community",
+        -- Lower priority categories
+        "Cheater", "Tacobot", "MCDB", "Suspicious", "Watched"
+    }
+    
+    -- Count entries to remove
+    local toRemove = Database.State.entriesCount - maxEntries
+    local removed = 0
+    
+    -- Remove entries not in priority list first
+    if toRemove > 0 then
+        local nonPriorityEntries = {}
+        
+        for steamId, data in pairs(Database.data) do
+            -- Check if this entry is a priority
+            local isPriority = false
+            local proof = (data.proof or ""):lower()
+            
+            for _, priority in ipairs(priorities) do
+                if proof:find(priority:lower()) then
+                    isPriority = true
+                    break
+                end
+            end
+            
+            if not isPriority then
+                table.insert(nonPriorityEntries, steamId)
+                if #nonPriorityEntries >= toRemove then
+                    break
+                end
+            end
+        end
+        
+        -- Remove the non-priority entries
+        for _, steamId in ipairs(nonPriorityEntries) do
+            Database.content[steamId] = nil
+            removed = removed + 1
+        end
+    end
+    
+    -- If we still need to remove more, start removing lowest priority entries
+    if removed < toRemove then
+        -- Process in reverse priority order
+        for i = #priorities, 1, -1 do
+            local priority = priorities[i]:lower()
+            
+            for steamId, data in pairs(Database.data) do
+                local proof = (data.proof or ""):lower()
+                
+                if proof:find(priority) then
+                    Database.content[steamId] = nil
+                    removed = removed + 1
+                    
+                    if removed >= toRemove then
+                        break
+                    end
+                end
+            end
+            
+            if removed >= toRemove then
+                break
+            end
+        end
+    end
+    
+    -- Save the cleaned database
+    if removed > 0 and Database.State.isDirty then
+        Database.SaveDatabase()
+    end
+    
+    return removed
+end
+
+-- Register database commands
+local function RegisterCommands()
+    local Commands = Common.Lib.Utils.Commands
+    
+    -- Database stats command
+    Commands.Register("cd_db_stats", function()
+        local stats = Database.GetStats()
+        print(string.format("[Database] Total entries: %d", stats.entryCount))
+        print(string.format("[Database] Memory usage: %.2f MB", stats.memoryMB))
+        
+        -- Show proof type breakdown
+        print("[Database] Proof type breakdown:")
+        for proofType, count in pairs(stats.proofTypes) do
+            if count > 10 then -- Only show categories with more than 10 entries
+                print(string.format("  - %s: %d", proofType, count))
+            end
+        end
+    end, "Show database statistics")
+    
+    -- Database cleanup command
+    Commands.Register("cd_db_cleanup", function(args)
+        local limit = tonumber(args[1]) or Database.Config.MaxEntries
+        local beforeCount = Database.State.entriesCount
+        local removed = Database.Cleanup(limit)
+        
+        print(string.format("[Database] Cleaned %d entries (from %d to %d)", 
+            removed, beforeCount, Database.State.entriesCount))
+    end, "Clean the database to stay under entry limit")
+end
+
+-- Auto-save on unload
+local function OnUnload()
+    if Database.State.isDirty then
+        Database.SaveDatabase()
+    end
+end
+
+-- Initialize the database
+local function InitializeDatabase()
+    -- Load existing database first
+    Database.LoadDatabase()
+    
+    -- Import additional data
+    Database.ImportDatabase()
+    
+    -- Clean up if over limit
+    if Database.State.entriesCount > Database.Config.MaxEntries then
+        local removed = Database.Cleanup()
+        if removed > 0 and Database.Config.DebugMode then
+            print(string.format("[Database] Cleaned %d entries to stay under limit", removed))
+        end
+    end
+
+    -- Check if Database_Fetcher is available and has auto-fetch enabled
+    pcall(function()
+        if Database_Fetcher and Database_Fetcher.Config and Database_Fetcher.Config.AutoFetchOnLoad then
+            Database_Fetcher.AutoFetch(Database)
+        end
+    end)
+end
+
 -- Register unload callback
 callbacks.Unregister("Unload", "CDDatabase_Unload")
 callbacks.Register("Unload", "CDDatabase_Unload", OnUnload)
+
+-- Register commands
+RegisterCommands()
 
 -- Initialize the database when this module is loaded
 InitializeDatabase()
