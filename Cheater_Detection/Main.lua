@@ -29,143 +29,161 @@ local Commands = Common.Lib.Utils.Commands
 
 --[[ Initialize systems ]]
 local function InitializeSystems()
-    -- Load config
-    Config.LoadCFG()
+	-- Load config
+	Config.LoadCFG()
 
-    -- Initialize database system through manager (this handles loading, importing and auto-fetching)
-    G.Database = DBManager.Initialize({
-        AutoFetchOnLoad = true, -- Automatically fetch updates on startup
-        CheckInterval = 24      -- Check for updates every 24 hours
-    })
+	-- Initialize database system through manager (this handles loading, importing and auto-fetching)
+	G.Database = DBManager.Initialize({
+		AutoFetchOnLoad = true, -- Automatically fetch updates on startup
+		CheckInterval = 24, -- Check for updates every 24 hours
+	})
 
-    -- Clear local player from cheater list (for debugging)
-    local localPlayer = entities.GetLocalPlayer()
-    if localPlayer then
-        local mySteamID = Common.GetSteamID64(localPlayer)
-        playerlist.SetPriority(mySteamID, 0)
-    end
+	-- Clear local player from cheater list (for debugging)
+	local localPlayer = entities.GetLocalPlayer()
+	if localPlayer then
+		local mySteamID = Common.GetSteamID64(localPlayer)
+		playerlist.SetPriority(mySteamID, 0)
+	end
 
-    -- Print initialization message
-    local dbStats = DBManager.GetStats()
-    printc(100, 255, 100, 255,
-        string.format("[Cheater Detection] Initialized with %d database entries", dbStats.totalEntries))
+	-- Print initialization message
+	local dbStats = DBManager.GetStats()
+	if dbStats.totalEntries == nil then
+		printc(255, 100, 100, 255, "[Cheater Detection] No database entries found. Please update the database.")
+	else
+		printc(
+			100,
+			255,
+			100,
+			255,
+			string.format("[Cheater Detection] Initialized with %d database entries", dbStats.totalEntries)
+		)
+	end
 
-    -- Register console commands for database management
-    Commands.Register("cd_check", function(args)
-        if #args < 1 then
-            print("Usage: cd_check <steamid or name fragment>")
-            return
-        end
+	-- Register console commands for database management
+	Commands.Register("cd_check", function(args)
+		if #args < 1 then
+			print("Usage: cd_check <steamid or name fragment>")
+			return
+		end
 
-        local query = args[1]
-        local found = false
+		local query = args[1]
+		local found = false
 
-        -- Check if it's a valid SteamID
-        if query:match("^%d+$") and #query >= 17 then
-            local record = G.Database.GetRecord(query)
-            if record then
-                found = true
-                print(string.format("[Database] Found record for SteamID: %s", query))
-                print(string.format("  Name: %s", record.Name or "Unknown"))
-                print(string.format("  Cause: %s", record.cause or "Unknown"))
-                print(string.format("  Date: %s", record.date or "Unknown"))
-            end
-        end
+		-- Check if it's a valid SteamID
+		if query:match("^%d+$") and #query >= 17 then
+			local record = G.Database.GetRecord(query)
+			if record then
+				found = true
+				print(string.format("[Database] Found record for SteamID: %s", query))
+				print(string.format("  Name: %s", record.Name or "Unknown"))
+				print(string.format("  Cause: %s", record.cause or "Unknown"))
+				print(string.format("  Date: %s", record.date or "Unknown"))
+			end
+		end
 
-        -- If not found by SteamID, search by name
-        if not found then
-            local matches = 0
-            for steamId, data in pairs(G.Database.content or {}) do
-                if data.Name and data.Name:lower():find(query:lower()) then
-                    matches = matches + 1
-                    print(string.format("[Database] Match %d: %s (SteamID: %s)", matches, data.Name, steamId))
-                    print(string.format("  Cause: %s", data.cause or "Unknown"))
-                    print(string.format("  Date: %s", data.date or "Unknown"))
+		-- If not found by SteamID, search by name
+		if not found then
+			local matches = 0
+			for steamId, data in pairs(G.Database.content or {}) do
+				if data.Name and data.Name:lower():find(query:lower()) then
+					matches = matches + 1
+					print(string.format("[Database] Match %d: %s (SteamID: %s)", matches, data.Name, steamId))
+					print(string.format("  Cause: %s", data.cause or "Unknown"))
+					print(string.format("  Date: %s", data.date or "Unknown"))
 
-                    -- Limit to 5 matches to avoid spam
-                    if matches >= 5 then
-                        print(string.format("[Database] Found more matches, showing first 5 only"))
-                        break
-                    end
-                end
-            end
+					-- Limit to 5 matches to avoid spam
+					if matches >= 5 then
+						print(string.format("[Database] Found more matches, showing first 5 only"))
+						break
+					end
+				end
+			end
 
-            if matches == 0 then
-                print(string.format("[Database] No records found for: %s", query))
-            end
-        end
-    end, "Check if a player is in the cheat database")
+			if matches == 0 then
+				print(string.format("[Database] No records found for: %s", query))
+			end
+		end
+	end, "Check if a player is in the cheat database")
 end
 
---[[ Update the player data every tick ]] --
+--[[ Update the player data every tick ]]
+--
 local function OnCreateMove(cmd)
-    local DebugMode = G.Menu.Main.debug
-    G.pLocal = entities.GetLocalPlayer()
-    G.players = entities.FindByClass("CTFPlayer")
-    if not G.pLocal or not G.players then return end
+	local DebugMode = G.Menu.Main.debug
+	G.pLocal = entities.GetLocalPlayer()
+	G.players = entities.FindByClass("CTFPlayer")
+	if not G.pLocal or not G.players then
+		return
+	end
 
-    G.WLocal = WPlayer.FromEntity(G.pLocal)
-    G.connectionState = PR.GetConnectionState()[G.pLocal:GetIndex()]
+	G.WLocal = WPlayer.FromEntity(G.pLocal)
+	G.connectionState = PR.GetConnectionState()[G.pLocal:GetIndex()]
 
-    for _, entity in ipairs(G.players) do
-        -- Get the steamid for the player
-        local steamid = Common.GetSteamID64(entity)
-        if not steamid then
-            warn("Failed to get SteamID for player %s", entity:GetName() or "nil")
-            return
-        end
+	for _, entity in ipairs(G.players) do
+		-- Get the steamid for the player
+		local steamid = Common.GetSteamID64(entity)
+		if not steamid then
+			warn("Failed to get SteamID for player %s", entity:GetName() or "nil")
+			return
+		end
 
-        -- Check if player is a known cheater in database
-        if G.Database and G.Database.GetRecord(steamid) then
-            -- Player is in database, mark them
-            local priority = playerlist.GetPriority(steamid)
-            if priority < 10 then
-                playerlist.SetPriority(steamid, 10)
-            end
-            -- Skip detection checks for known cheaters
-            goto continue
-        end
+		-- Check if player is a known cheater in database
+		if G.Database and G.Database.GetRecord(steamid) then
+			-- Player is in database, mark them
+			local priority = playerlist.GetPriority(steamid)
+			if priority < 10 then
+				playerlist.SetPriority(steamid, 10)
+			end
+			-- Skip detection checks for known cheaters
+			goto continue
+		end
 
-        if Common.IsValidPlayer(entity, true) and not Common.IsCheater(steamid) then
-            -- Initialize player data if it doesn't exist
-            if not G.PlayerData[steamid] then
-                G.PlayerData[steamid] = G.DefaultPlayerData
-            end
+		if Common.IsValidPlayer(entity, true) and not Common.IsCheater(steamid) then
+			-- Initialize player data if it doesn't exist
+			if not G.PlayerData[steamid] then
+				G.PlayerData[steamid] = G.DefaultPlayerData
+			end
 
-            local wrappedPlayer = WPlayer.FromEntity(entity)
-            local viewAngles = wrappedPlayer:GetEyeAngles()
-            local entityFlags = entity:GetPropInt("m_fFlags")
-            local isOnGround = entityFlags & FL_ONGROUND == FL_ONGROUND
-            local headHitboxPosition = wrappedPlayer:GetHitboxPos(1)
-            local bodyHitboxPosition = wrappedPlayer:GetHitboxPos(4)
-            local viewPos = wrappedPlayer:GetEyePos()
-            local simulationTime = wrappedPlayer:GetSimulationTime()
+			local wrappedPlayer = WPlayer.FromEntity(entity)
+			local viewAngles = wrappedPlayer:GetEyeAngles()
+			local entityFlags = entity:GetPropInt("m_fFlags")
+			local isOnGround = entityFlags & FL_ONGROUND == FL_ONGROUND
+			local headHitboxPosition = wrappedPlayer:GetHitboxPos(1)
+			local bodyHitboxPosition = wrappedPlayer:GetHitboxPos(4)
+			local viewPos = wrappedPlayer:GetEyePos()
+			local simulationTime = wrappedPlayer:GetSimulationTime()
 
-            -- Gather player data
-            G.PlayerData[steamid].Current = Common.createRecord(viewAngles, viewPos, headHitboxPosition,
-                bodyHitboxPosition, simulationTime, isOnGround)
+			-- Gather player data
+			G.PlayerData[steamid].Current = Common.createRecord(
+				viewAngles,
+				viewPos,
+				headHitboxPosition,
+				bodyHitboxPosition,
+				simulationTime,
+				isOnGround
+			)
 
-            -- Perform detection checks (when Detections module is enabled)
-            if Detections then
-                Detections.CheckAngles(wrappedPlayer, entity)
-                Detections.CheckDuckSpeed(wrappedPlayer, entity)
-                Detections.CheckBunnyHop(wrappedPlayer, entity)
-                Detections.CheckPacketChoke(wrappedPlayer, entity)
-                Detections.CheckSequenceBurst(wrappedPlayer, entity)
-            end
+			-- Perform detection checks (when Detections module is enabled)
+			if Detections then
+				Detections.CheckAngles(wrappedPlayer, entity)
+				Detections.CheckDuckSpeed(wrappedPlayer, entity)
+				Detections.CheckBunnyHop(wrappedPlayer, entity)
+				Detections.CheckPacketChoke(wrappedPlayer, entity)
+				Detections.CheckSequenceBurst(wrappedPlayer, entity)
+			end
 
-            -- Update history
-            G.PlayerData[steamid].History = G.PlayerData[steamid].History or {}
-            table.insert(G.PlayerData[steamid].History, G.PlayerData[steamid].Current)
+			-- Update history
+			G.PlayerData[steamid].History = G.PlayerData[steamid].History or {}
+			table.insert(G.PlayerData[steamid].History, G.PlayerData[steamid].Current)
 
-            -- Keep the history table size to a maximum of 66
-            if #G.PlayerData[steamid].History > 66 then
-                table.remove(G.PlayerData[steamid].History, 1)
-            end
-        end
+			-- Keep the history table size to a maximum of 66
+			if #G.PlayerData[steamid].History > 66 then
+				table.remove(G.PlayerData[steamid].History, 1)
+			end
+		end
 
-        ::continue::
-    end
+		::continue::
+	end
 end
 
 --[[ Callbacks ]]
@@ -176,13 +194,13 @@ InitializeSystems()
 
 -- Provide global access to main module functions
 return {
-    ReloadDatabase = function()
-        G.Database = DBManager.Initialize({ AutoFetchOnLoad = true })
-    end,
+	ReloadDatabase = function()
+		G.Database = DBManager.Initialize({ AutoFetchOnLoad = true })
+	end,
 
-    UpdateDatabase = function()
-        DBManager.ForceUpdate()
-    end,
+	UpdateDatabase = function()
+		DBManager.ForceUpdate()
+	end,
 
-    GetDatabaseStats = DBManager.GetStats
+	GetDatabaseStats = DBManager.GetStats,
 }

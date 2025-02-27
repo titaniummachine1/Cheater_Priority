@@ -34,7 +34,7 @@ local Tasks = {
 
 	-- Animation settings
 	Animation = {
-		SmoothFactor = 0.1, -- Progress bar smoothing (higher = faster)
+		SmoothFactor = 0.7, -- Progress bar smoothing (higher = faster)
 		FadeDelay = 3, -- Seconds before fading out after completion
 		FadeDuration = 1, -- Seconds for fade out animation
 	},
