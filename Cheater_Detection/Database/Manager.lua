@@ -184,16 +184,12 @@ local function RegisterCommands()
 	end, "Remove unnecessary database entries to improve performance")
 end
 
--- Fix command registration to avoid duplicate commands
+-- Fix command registration to avoid checking existence
 local function RegisterValidationCommand()
-	-- Check if command already exists before registering
-	if not Commands.Exists("cd_validate") then
-		Commands.Register("cd_validate", function()
-			Manager.ValidateDatabase()
-		end, "Validate database against sources without full reload")
-	else
-		print("[Database Manager] Command cd_validate already exists, skipping registration")
-	end
+	-- Simply register the command, override if it already exists
+	Commands.Register("cd_validate", function()
+		Manager.ValidateDatabase()
+	end, "Validate database against sources without full reload")
 end
 
 -- Register commands without loading modules immediately

@@ -742,7 +742,7 @@ function Database.ValidateDatabase(source, sourceName, sourceCause)
 	return added
 end
 
--- Add utility functions to trigger validation with proper progress updates
+-- Add utility functions to trigger validation with proper progress updates and coroutine pacing
 function Database.ValidateWithSources(silent)
 	if not Database_Fetcher then
 		if not silent then
@@ -788,7 +788,7 @@ function Database.ValidateWithSources(silent)
 		end
 	end)
 
-	-- Create a coroutine to process sources one by one
+	-- Create a coroutine to process sources one by one with fixed 2-second delays
 	local validationTask = coroutine.create(function()
 		local totalAdded = 0
 		local totalSources = #sources
@@ -802,17 +802,52 @@ function Database.ValidateWithSources(silent)
 					Tasks.message = "Validating: " .. source.name
 				end
 
+				-- Add a fixed 2-second delay between sources to prevent overloading
+				if i > 1 then
+					local delayTime = 2.0 -- Fixed 2-second delay
+
+					-- Use countdown for better UI feedback
+					local startTime = globals.RealTime()
+					while globals.RealTime() < startTime + delayTime do
+						local remaining = math.ceil((startTime + delayTime) - globals.RealTime())
+						if hasTasks then
+							Tasks.message = string.format("Rate limit: %ds before next request...", remaining)
+						end
+						coroutine.yield() -- Keep yielding to maintain smooth gameplay
+					end
+				end
+
 				-- Get content from source
 				if Database_Fetcher.ProcessSourceInBatches then
-					-- Use the batch processor from Fetcher for memory efficiency
+					-- Use the batch processor with built-in coroutine support
 					local content = Database_Fetcher.ProcessSourceInBatches(source, Database)
 					totalAdded = totalAdded + (tonumber(content) or 0)
 				else
-					-- Fall back to direct processing
+					-- Fall back to direct processing with improved coroutine handling
 					local content = {}
-					local success, rawContent = pcall(function()
-						return http.Get(source.url)
+					local success, rawContent = false, nil
+
+					-- Download in a non-blocking way
+					local dlTask = coroutine.create(function()
+						if hasTasks then
+							Tasks.message = "Downloading from " .. source.name
+						end
+						return pcall(function()
+							return http.Get(source.url)
+						end)
 					end)
+
+					-- Run the download task with yielding
+					while coroutine.status(dlTask) ~= "dead" do
+						local dlSuccess, dlResult, dlContent = coroutine.resume(dlTask)
+
+						if dlSuccess then
+							success = dlResult
+							rawContent = dlContent
+						end
+
+						coroutine.yield() -- Keep game responsive
+					end
 
 					if success and rawContent and #rawContent > 0 then
 						local added = Database.ValidateDatabase(content, source.name, source.cause)
@@ -825,7 +860,7 @@ function Database.ValidateWithSources(silent)
 					Tasks.SourceDone()
 				end
 
-				-- Yield to prevent freezing
+				-- Force a yield even if not needed, to maintain responsiveness
 				coroutine.yield()
 			end
 		end

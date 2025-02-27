@@ -1,14 +1,14 @@
 --[[
-    Database_Fetcher.lua - Improved version
-    Fetches cheater databases from online sources with delays to prevent IP bans
-    Uses smooth interpolation for progress display
+    Database_Fetcher.lua - Fixed version
+    Fetches cheater databases from online sources with fixed 2-second delays
+    Uses coroutines for background processing to keep the game responsive
 ]]
 
 -- Import required modules
 local Common = require("Cheater_Detection.Utils.Common")
 local Commands = Common.Lib.Utils.Commands
 
--- Get JSON from Common, don't try to import a non-existent module
+-- Get JSON from Common
 local Json = Common.Json
 if not Json then
 	print("[Database Fetcher] Warning: JSON library not available in Common, some features may not work")
@@ -27,12 +27,13 @@ local Fetcher = {
 		AutoSaveAfterFetch = true, -- Save database after fetching
 		NotifyOnFetchComplete = true, -- Show completion notifications
 		ShowProgressBar = true, -- Show progress UI
+		ForceInitialDelay = true, -- Always apply delay even before first source
 
 		-- Anti-ban protection settings
-		MinSourceDelay = 4, -- Minimum seconds between sources
-		MaxSourceDelay = 8, -- Maximum seconds between sources
+		MinSourceDelay = 2, -- Fixed 2 second minimum delay between sources
+		MaxSourceDelay = 2, -- Fixed 2 second maximum delay between sources
 		RequestTimeout = 15, -- Seconds to wait before timeout
-		EnableRandomDelay = true, -- Add random delay variation
+		EnableRandomDelay = false, -- Always use exactly 2 seconds
 
 		-- UI settings
 		SmoothingFactor = 0.05, -- Lower = smoother but slower progress bar
@@ -143,21 +144,12 @@ Fetcher.Memory = {
 	end,
 }
 
--- Get a randomized delay between sources
+-- Always return exactly 2 seconds delay
 function Fetcher.GetSourceDelay()
-	local minDelay = Fetcher.Config.MinSourceDelay
-	local maxDelay = Fetcher.Config.MaxSourceDelay
-
-	if Fetcher.Config.EnableRandomDelay then
-		-- Random delay in the configured range
-		return minDelay + math.random() * (maxDelay - minDelay)
-	else
-		-- Use the mid-point
-		return (minDelay + maxDelay) / 2
-	end
+	return Fetcher.Config.MinSourceDelay
 end
 
--- Improved batch processing with better memory management
+-- Improved batch processing with enhanced coroutine support
 function Fetcher.ProcessSourceInBatches(source, database)
 	if not source or not source.url or not database then
 		return 0, "Invalid source configuration"
@@ -172,47 +164,81 @@ function Fetcher.ProcessSourceInBatches(source, database)
 	-- Check memory before download
 	Fetcher.Memory.Check()
 
-	-- Step 1: Download the content with minimized memory usage
+	-- Step 1: Download the content without blocking main thread
 	Tasks.message = "Downloading from " .. sourceName .. "..."
-	local sourceRawData = Parsers.Download(sourceUrl)
 
-	-- If download failed, try a backup URL if available
-	if not sourceRawData or #sourceRawData == 0 then
-		-- Try GitHub fallback for bots.tf
-		if sourceName == "bots.tf" then
-			Tasks.message = "Primary source failed, trying backup..."
-			sourceRawData = Parsers.Download(
-				"https://raw.githubusercontent.com/PazerOP/tf2_bot_detector/master/staging/cfg/playerlist.official.json"
-			)
-		end
+	-- Create a dedicated coroutine for downloading
+	local downloadCoroutine = coroutine.create(function()
+		local sourceRawData = Parsers.Download(sourceUrl)
 
-		-- Still failed
+		-- If download failed, try a backup URL if available
 		if not sourceRawData or #sourceRawData == 0 then
-			return 0, "Download failed"
+			-- Try GitHub fallback for bots.tf
+			if sourceName == "bots.tf" then
+				Tasks.message = "Primary source failed, trying backup..."
+
+				-- Wait 2 seconds before retrying
+				local startTime = globals.RealTime()
+				while globals.RealTime() - startTime < Fetcher.Config.MinSourceDelay do
+					Tasks.message = string.format(
+						"Retry in %.1fs...",
+						Fetcher.Config.MinSourceDelay - (globals.RealTime() - startTime)
+					)
+					coroutine.yield()
+				end
+
+				sourceRawData = Parsers.Download(
+					"https://raw.githubusercontent.com/PazerOP/tf2_bot_detector/master/staging/cfg/playerlist.official.json"
+				)
+			end
+
+			-- Still failed
+			if not sourceRawData or #sourceRawData == 0 then
+				return 0, "Download failed"
+			end
 		end
-	end
 
-	-- Step 2: Process with minimal memory usage
-	Tasks.message = "Processing " .. sourceName .. "..."
+		-- Step 2: Process with minimal memory usage in the same coroutine
+		Tasks.message = "Processing " .. sourceName .. "..."
+		local result = 0
+
+		-- Use incremental processing based on parser type
+		if source.parser == "raw" then
+			result = Parsers.ProcessRawList(sourceRawData, database, sourceName, source.cause)
+		elseif source.parser == "tf2db" then
+			result = Parsers.ProcessTF2DB(sourceRawData, database, source)
+		else
+			return 0, "Unknown parser type"
+		end
+
+		-- Clear data and force memory cleanup
+		sourceRawData = nil
+		Fetcher.Memory.ForceCleanup()
+
+		return result
+	end)
+
+	-- Run the download coroutine until completion
 	local result = 0
+	while coroutine.status(downloadCoroutine) ~= "dead" do
+		local success, res = coroutine.resume(downloadCoroutine)
 
-	-- Use incremental processing based on parser type
-	if source.parser == "raw" then
-		result = Parsers.ProcessRawList(sourceRawData, database, sourceName, source.cause)
-	elseif source.parser == "tf2db" then
-		result = Parsers.ProcessTF2DB(sourceRawData, database, source)
-	else
-		return 0, "Unknown parser type"
+		if not success then
+			print("[Fetcher] Error in download coroutine: " .. tostring(res))
+			return 0, tostring(res)
+		end
+
+		if type(res) == "number" then
+			result = res
+		end
+
+		coroutine.yield() -- Give control back to main thread
 	end
-
-	-- Clear data and force memory cleanup
-	sourceRawData = nil
-	Fetcher.Memory.ForceCleanup()
 
 	return result
 end
 
--- Main fetch function with improved UI handling
+-- Main fetch function with improved coroutine handling
 function Fetcher.FetchAll(database, callback, silent)
 	-- If already running, don't start again
 	if Tasks.isRunning then
@@ -232,13 +258,13 @@ function Fetcher.FetchAll(database, callback, silent)
 	Tasks.silent = silent or false
 	Tasks.Config.SimplifiedUI = true -- Use simplified "Loading Database" UI
 
-	-- Create a main task that processes all sources with proper memory management
+	-- Create a main task that processes all sources with proper pacing
 	local mainTask = coroutine.create(function()
 		local totalAdded = 0
 
-		-- Process each source with delays between them
+		-- Process each source with mandatory delays between them
 		for i, source in ipairs(Fetcher.Sources) do
-			-- Start source with progress tracking - simplified UI will just show "Loading Database"
+			-- Start source with progress tracking
 			Tasks.StartSource(source.name)
 
 			-- Update target progress for smooth interpolation
@@ -250,16 +276,17 @@ function Fetcher.FetchAll(database, callback, silent)
 			-- Yield to update UI
 			coroutine.yield()
 
-			-- Apply anti-ban delay if not the first source
-			if i > 1 then
-				local delay = Fetcher.GetSourceDelay()
-				Tasks.message = string.format("Waiting %.1fs before next request...", delay)
+			-- ALWAYS apply the 2-second delay between sources, even for the first one
+			-- This allows the game to breathe between network operations
+			if i > 1 or Fetcher.Config.ForceInitialDelay then
+				local delay = Fetcher.GetSourceDelay() -- Will always be 2 seconds
+				Tasks.message = string.format("Waiting %.1fs between requests...", delay)
 
-				-- Wait with countdown
+				-- Wait with countdown using coroutines for smoother UI
 				local startTime = globals.RealTime()
 				while globals.RealTime() < startTime + delay do
 					-- Update remaining time
-					local remaining = math.ceil(startTime + delay - globals.RealTime())
+					local remaining = math.ceil((startTime + delay) - globals.RealTime())
 					Tasks.message = string.format("Rate limit: %ds before next request...", remaining)
 					coroutine.yield()
 				end
@@ -290,7 +317,7 @@ function Fetcher.FetchAll(database, callback, silent)
 			-- Force cleanup after each source
 			Fetcher.Memory.ForceCleanup()
 
-			-- Yield to update UI
+			-- Always yield after each source to keep the game responsive
 			coroutine.yield()
 		end
 
@@ -346,18 +373,12 @@ function Fetcher.FetchAll(database, callback, silent)
 			-- Handle callback with separate coroutine to prevent overflow
 			if type(callback) == "function" then
 				-- Run callback in next frame to prevent stack overflow
-				local callbackTask = coroutine.create(function()
-					pcall(callback, totalAdded)
-				end)
-
-				-- Register a one-time callback processor
 				callbacks.Register("Draw", "FetcherCallback", function()
 					callbacks.Unregister("Draw", "FetcherCallback")
 
-					local callbackSuccess = pcall(coroutine.resume, callbackTask)
+					local callbackSuccess, err = pcall(callback, totalAdded)
 					if not callbackSuccess then
-						print("[Database Fetcher] Warning: Callback failed")
-						-- Emergency cleanup if callback fails
+						print("[Database Fetcher] Warning: Callback failed: " .. tostring(err))
 						Fetcher.Memory.EmergencyCleanup()
 					end
 				end)
