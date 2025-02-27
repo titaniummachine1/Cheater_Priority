@@ -94,72 +94,20 @@ function Parsers.Download(url, retryCount)
 		local response = nil
 		local requestFinished = false
 
-		-- Create a dedicated coroutine for the HTTP request to prevent blocking
-		local requestCoroutine = coroutine.create(function()
-			local success, result = pcall(function()
-				local headers = {
-					["User-Agent"] = userAgent,
-					["Accept"] = "text/plain, application/json",
-					["Cache-Control"] = "no-cache",
-				}
-
-				-- Use http.Get with headers
-				return http.Get(url, headers)
-			end)
-
-			requestFinished = true
-
-			if success then
-				return result
-			else
-				return nil, tostring(result)
-			end
+		-- Direct HTTP request for reliability
+		-- This is a simplified version with no coroutine overhead that's more reliable
+		local success, result = pcall(function()
+			local headers = {
+				["User-Agent"] = userAgent,
+				["Accept"] = "text/plain, application/json",
+				["Cache-Control"] = "no-cache",
+			}
+			return http.Get(url, headers)
 		end)
 
-		-- Create a timeout checker that runs on the main thread
-		local timeoutCheckerId = "request_timeout_" .. tostring(math.random(1000000))
-		callbacks.Register("Draw", timeoutCheckerId, function()
-			if globals.RealTime() - startTime > Parsers.Config.RequestTimeout then
-				requestTimedOut = true
-				requestFinished = true
-				callbacks.Unregister("Draw", timeoutCheckerId)
-			end
-
-			-- Update message with elapsed time
-			local elapsed = globals.RealTime() - startTime
-			Tasks.message = string.format("Downloading (%d/%d)... %.1fs", retry + 1, retryCount, elapsed)
-		end)
-
-		-- Run the request coroutine in chunks to keep the game responsive
-		local result = nil
-		local error = nil
-
-		while not requestFinished and not requestTimedOut do
-			local success, res, err = coroutine.resume(requestCoroutine)
-
-			if success then
-				if res ~= nil then
-					result = res
-				end
-				if err ~= nil then
-					error = err
-				end
-			else
-				error = res -- error message is in the first return value when pcall fails
-				requestFinished = true
-			end
-
-			coroutine.yield() -- Return control to main thread
-		end
-
-		-- Unregister the timeout checker
-		callbacks.Unregister("Draw", timeoutCheckerId)
-
-		-- Process the result with direct string handling
-		if requestTimedOut then
-			lastError = "Request timed out"
-		elseif error then
-			lastError = "HTTP error: " .. tostring(error)
+		-- Process the result directly
+		if not success then
+			lastError = "HTTP error: " .. tostring(result)
 		elseif not result then
 			lastError = "Empty response"
 		elseif type(result) ~= "string" then
@@ -171,7 +119,7 @@ function Parsers.Download(url, retryCount)
 				return "" -- Return empty string if empty responses are acceptable
 			end
 		else
-			-- Check for HTML directly via string patterns, not table operations
+			-- Check for HTML directly via string patterns
 			if result:match("<!DOCTYPE html>") or result:match("<html") then
 				-- Check if it's GitHub returning HTML
 				if url:find("github") or url:find("githubusercontent") and result:find("rate limit") then
@@ -180,7 +128,7 @@ function Parsers.Download(url, retryCount)
 					lastError = "Received HTML instead of data (website error or CAPTCHA)"
 				end
 
-				-- Always print the HTML response start for debugging
+				-- Print the HTML response start for debugging
 				print("[Parsers] HTML response from " .. url .. " (length: " .. #result .. ")")
 				print("[Parsers] First 100 chars: " .. result:sub(1, 100))
 
@@ -189,7 +137,7 @@ function Parsers.Download(url, retryCount)
 					return result
 				end
 			else
-				-- Success! Return the response without creating tables
+				-- Success! Return the response
 				return result
 			end
 		end
@@ -353,10 +301,13 @@ function Parsers.ProcessRawList(content, database, sourceName, sourceCause)
 		return 0
 	end
 
-	-- Safety check for database structure
-	if type(database) ~= "table" or type(database.content) ~= "table" then
-		Parsers.LogError("Invalid database structure", type(database))
-		return 0
+	-- Make sure database.content exists to prevent errors
+	if not database.content then
+		print("[Parsers] WARNING: database.content is nil, creating it")
+		database.content = {}
+		database.State = database.State or {}
+		database.State.isDirty = true
+		database.State.entriesCount = 0
 	end
 
 	Tasks.message = "Processing " .. sourceName .. "..."
@@ -431,6 +382,11 @@ function Parsers.ProcessRawList(content, database, sourceName, sourceCause)
 		collectgarbage("step", 100)
 	end
 
+	-- Mark database as dirty explicitly
+	if count > 0 and database.State then
+		database.State.isDirty = true
+	end
+
 	Tasks.message = string.format("Finished %s: %d added, %d skipped, %d invalid", sourceName, count, skipped, invalid)
 	coroutine.yield()
 
@@ -501,6 +457,15 @@ function Parsers.ProcessBotsTF(content, database, sourceName, sourceCause)
 	Tasks.message = "Processing " .. totalLines .. " SteamID64s from " .. sourceName
 	coroutine.yield()
 
+	-- Make sure database.content exists to prevent errors
+	if not database.content then
+		print("[Parsers] WARNING: database.content is nil, creating it")
+		database.content = {}
+		database.State = database.State or {}
+		database.State.isDirty = true
+		database.State.entriesCount = 0
+	end
+
 	-- Process each line with robust error handling
 	for i, steamID64 in ipairs(lines) do
 		-- We should already have valid SteamID64s at this point
@@ -530,6 +495,11 @@ function Parsers.ProcessBotsTF(content, database, sourceName, sourceCause)
 				string.format("Processing %s: %d%% (%d added, %d skipped)", sourceName, progressPct, count, skipped)
 			coroutine.yield()
 		end
+	end
+
+	-- Mark database as dirty explicitly
+	if count > 0 and database.State then
+		database.State.isDirty = true
 	end
 
 	Tasks.message = string.format("Finished %s: %d added, %d skipped", sourceName, count, skipped)

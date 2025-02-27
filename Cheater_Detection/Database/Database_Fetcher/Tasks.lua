@@ -169,6 +169,25 @@ end
 
 -- Reset the task system with cleanup
 function Tasks.Reset()
+	-- De-register any callbacks associated with tasks
+	pcall(function()
+		callbacks.Unregister("Draw", "TasksUpdateProgress")
+		callbacks.Unregister("Draw", "TasksCleanup")
+	end)
+
+	-- Reset all task variables to initial state
+	Tasks.isRunning = false
+	Tasks.status = "idle"
+	Tasks.progress = 0
+	Tasks.targetProgress = 0
+	Tasks.currentSource = nil
+	Tasks.completedTime = 0
+	Tasks.totalSources = 0
+	Tasks.completedSources = 0
+	Tasks.message = ""
+	Tasks.callback = nil
+	Tasks.silent = false
+
 	-- Clear all task data
 	Tasks.queue = {}
 	Tasks.status = "idle"

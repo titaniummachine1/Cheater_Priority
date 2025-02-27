@@ -146,6 +146,9 @@ end
 
 -- Save database to disk with optimized line-by-line writing to prevent overflow
 function Database.SaveDatabase()
+	-- Ensure the database is initialized first
+	Database.EnsureInitialized()
+
 	-- Create a save task to run in coroutine
 	local saveTask = coroutine.create(function()
 		local filePath = Database.GetFilePath()
@@ -919,6 +922,9 @@ end
 
 -- Import function for database updating
 function Database.ImportDatabase()
+	-- Ensure database is properly initialized
+	Database.EnsureInitialized()
+
 	-- Simple import from Database_import module
 	local beforeCount = Database.State.entriesCount
 
@@ -944,6 +950,9 @@ end
 
 -- Add utility functions to trigger fetching
 function Database.FetchUpdates(silent)
+	-- Ensure database is properly initialized
+	Database.EnsureInitialized()
+
 	if Database_Fetcher then
 		return Database_Fetcher.FetchAll(Database, function(totalAdded)
 			if totalAdded and totalAdded > 0 then
@@ -1105,6 +1114,9 @@ end
 
 -- Initialize the database
 local function InitializeDatabase()
+	-- Ensure database structure is properly initialized
+	Database.EnsureInitialized()
+
 	-- Try to restore the database first
 	if Restore.RestoreDatabase(Database) then
 		-- Successfully restored, skip loading from file
@@ -1141,6 +1153,45 @@ local function InitializeDatabase()
 			Database_Fetcher.AutoFetch(Database)
 		end
 	end)
+end
+
+-- Force database initialization for safe access
+function Database.EnsureInitialized()
+	-- Make sure the data structure exists
+	Database.data = Database.data or {}
+
+	-- Create the state table if it doesn't exist
+	Database.State = Database.State or {
+		entriesCount = 0,
+		isDirty = false,
+		lastSave = 0,
+	}
+
+	-- Create the content accessor if it doesn't exist
+	if not Database.content then
+		Database.content = setmetatable({}, {
+			__index = function(_, key)
+				return Database.data[key]
+			end,
+			__newindex = function(_, key, value)
+				Database.HandleSetEntry(key, value)
+			end,
+			__pairs = function()
+				return pairs(Database.data)
+			end,
+		})
+	end
+
+	-- Update entry count if needed
+	if Database.State.entriesCount <= 0 then
+		local count = 0
+		for _ in pairs(Database.data) do
+			count = count + 1
+		end
+		Database.State.entriesCount = count
+	end
+
+	return true
 end
 
 InitializeDatabase() -- Initialize the database when this module is loaded
