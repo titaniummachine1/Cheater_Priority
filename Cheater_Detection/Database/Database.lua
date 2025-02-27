@@ -742,7 +742,7 @@ function Database.ValidateDatabase(source, sourceName, sourceCause)
 	return added
 end
 
--- Add utility functions to trigger validation
+-- Add utility functions to trigger validation with proper progress updates
 function Database.ValidateWithSources(silent)
 	if not Database_Fetcher then
 		if not silent then
@@ -770,15 +770,36 @@ function Database.ValidateWithSources(silent)
 	local prevValidateOnly = Database.Config.ValidateOnly
 	Database.Config.ValidateOnly = false -- We want to add missing entries
 
+	-- Initialize UI with Tasks system
+	local Tasks = Database_Fetcher.Tasks
+	local hasTasks = false
+
+	pcall(function()
+		if Tasks then
+			Tasks.Reset()
+			Tasks.Init(#sources)
+			Tasks.message = "Validating Database"
+			Tasks.Config.SimplifiedUI = true
+			Tasks.isRunning = true
+			hasTasks = true
+
+			-- Make sure we have a Draw hook for Tasks.UpdateProgress
+			callbacks.Register("Draw", "TasksUpdateProgress", Tasks.UpdateProgress)
+		end
+	end)
+
 	-- Create a coroutine to process sources one by one
 	local validationTask = coroutine.create(function()
 		local totalAdded = 0
+		local totalSources = #sources
 
 		for i, source in ipairs(sources) do
 			if source and source.url and source.cause then
-				-- Set up user feedback
-				if G and G.UI and G.UI.UpdateProgress then
-					G.UI.UpdateProgress((i - 1) / #sources * 100, "Validating source " .. i .. "/" .. #sources)
+				-- Update progress display if we have Tasks
+				if hasTasks then
+					Tasks.StartSource(source.name)
+					Tasks.targetProgress = ((i - 1) / totalSources) * 100
+					Tasks.message = "Validating: " .. source.name
 				end
 
 				-- Get content from source
@@ -789,13 +810,19 @@ function Database.ValidateWithSources(silent)
 				else
 					-- Fall back to direct processing
 					local content = {}
-					local rawContent = pcall(function()
+					local success, rawContent = pcall(function()
 						return http.Get(source.url)
 					end)
-					if rawContent then
+
+					if success and rawContent and #rawContent > 0 then
 						local added = Database.ValidateDatabase(content, source.name, source.cause)
 						totalAdded = totalAdded + added
 					end
+				end
+
+				-- Mark task complete if we have Tasks
+				if hasTasks then
+					Tasks.SourceDone()
 				end
 
 				-- Yield to prevent freezing
@@ -806,9 +833,12 @@ function Database.ValidateWithSources(silent)
 		-- Restore validation mode
 		Database.Config.ValidateOnly = prevValidateOnly
 
-		-- Show completion
-		if G and G.UI and G.UI.UpdateProgress then
-			G.UI.UpdateProgress(100, "Validation complete")
+		-- Show completion if we have Tasks
+		if hasTasks then
+			Tasks.targetProgress = 100
+			Tasks.status = "complete"
+			Tasks.message = "Validation Complete"
+			Tasks.completedTime = globals.RealTime()
 		end
 
 		if not silent then

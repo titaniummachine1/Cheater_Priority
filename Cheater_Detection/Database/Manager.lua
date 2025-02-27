@@ -97,9 +97,10 @@ function Manager.ForceUpdate()
 	Database.FetchUpdates(false)
 end
 
--- Add function for validation only
+-- Fix validation method to ensure proper progress tracking
 function Manager.ValidateDatabase()
 	local Database = require("Cheater_Detection.Database.Database")
+	local Tasks = require("Cheater_Detection.Database.Database_Fetcher.Tasks")
 
 	if Database.State.entriesCount == 0 then
 		print("[Database Manager] No database loaded, fetching instead of validating")
@@ -107,6 +108,21 @@ function Manager.ValidateDatabase()
 	end
 
 	print("[Database Manager] Starting database validation")
+
+	-- Reset Tasks system to ensure clean state
+	Tasks.Reset()
+	Tasks.Init(1) -- Initial setup for progress tracking
+
+	-- Make sure the task knows it's validating
+	Tasks.status = "running"
+	Tasks.message = "Validating Database"
+	Tasks.progress = 0
+	Tasks.targetProgress = 0
+
+	-- Register the UpdateProgress function to ensure smooth animation
+	callbacks.Register("Draw", "TasksUpdateProgress", Tasks.UpdateProgress)
+
+	-- Start the validation with proper progress tracking
 	return Database.ValidateWithSources(false)
 end
 
@@ -168,11 +184,16 @@ local function RegisterCommands()
 	end, "Remove unnecessary database entries to improve performance")
 end
 
--- Register additional validation command
+-- Fix command registration to avoid duplicate commands
 local function RegisterValidationCommand()
-	Commands.Register("cd_validate", function()
-		Manager.ValidateDatabase()
-	end, "Validate database against sources without full reload")
+	-- Check if command already exists before registering
+	if not Commands.Exists("cd_validate") then
+		Commands.Register("cd_validate", function()
+			Manager.ValidateDatabase()
+		end, "Validate database against sources without full reload")
+	else
+		print("[Database Manager] Command cd_validate already exists, skipping registration")
+	end
 end
 
 -- Register commands without loading modules immediately
@@ -181,10 +202,14 @@ callbacks.Register("Draw", "CDDatabaseManager_RegisterCommands", function()
 	callbacks.Unregister("Draw", "CDDatabaseManager_RegisterCommands")
 end)
 
--- Add call to register validation command
+-- Register validation command only once using Draw callback
+local validationCommandRegistered = false
 callbacks.Register("Draw", "CDDatabaseManager_RegisterValidation", function()
-	RegisterValidationCommand()
-	callbacks.Unregister("Draw", "CDDatabaseManager_RegisterValidation")
+	if not validationCommandRegistered then
+		validationCommandRegistered = true
+		RegisterValidationCommand()
+		callbacks.Unregister("Draw", "CDDatabaseManager_RegisterValidation")
+	end
 end)
 
 return Manager

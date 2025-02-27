@@ -212,7 +212,7 @@ function Fetcher.ProcessSourceInBatches(source, database)
 	return result
 end
 
--- Main fetch function with improved memory management
+-- Main fetch function with improved UI handling
 function Fetcher.FetchAll(database, callback, silent)
 	-- If already running, don't start again
 	if Tasks.isRunning then
@@ -225,19 +225,12 @@ function Fetcher.FetchAll(database, callback, silent)
 	-- Force initial cleanup
 	Fetcher.Memory.ForceCleanup()
 
-	-- Initialize UI tracking with weak references
-	Fetcher.UI = setmetatable({
-		targetProgress = 0,
-		currentProgress = 0,
-		completedSources = 0,
-		totalSources = #Fetcher.Sources,
-	}, { __mode = "v" })
-
-	-- Initialize the task system
+	-- Initialize the task system with simplified UI
 	Tasks.Reset()
-	Tasks.Init(Fetcher.UI.totalSources)
+	Tasks.Init(#Fetcher.Sources)
 	Tasks.callback = callback
 	Tasks.silent = silent or false
+	Tasks.Config.SimplifiedUI = true -- Use simplified "Loading Database" UI
 
 	-- Create a main task that processes all sources with proper memory management
 	local mainTask = coroutine.create(function()
@@ -245,12 +238,11 @@ function Fetcher.FetchAll(database, callback, silent)
 
 		-- Process each source with delays between them
 		for i, source in ipairs(Fetcher.Sources) do
-			-- Start source with progress tracking
+			-- Start source with progress tracking - simplified UI will just show "Loading Database"
 			Tasks.StartSource(source.name)
-			Tasks.message = "Processing: " .. source.name
 
-			-- Update UI tracking
-			Fetcher.UI.targetProgress = (i - 1) / Fetcher.UI.totalSources * 100
+			-- Update target progress for smooth interpolation
+			Tasks.targetProgress = (i - 1) / #Fetcher.Sources * 100
 
 			-- Check memory before each source
 			Fetcher.Memory.Check()
@@ -292,10 +284,8 @@ function Fetcher.FetchAll(database, callback, silent)
 				Tasks.message = "Error processing " .. source.name
 			end
 
-			-- Mark source as done and update progress
+			-- Mark source as done for progress updates
 			Tasks.SourceDone()
-			Fetcher.UI.completedSources = i
-			Fetcher.UI.targetProgress = i / Fetcher.UI.totalSources * 100
 
 			-- Force cleanup after each source
 			Fetcher.Memory.ForceCleanup()
@@ -305,9 +295,10 @@ function Fetcher.FetchAll(database, callback, silent)
 		end
 
 		-- Finalize
-		Fetcher.UI.targetProgress = 100
-		Tasks.progress = 100
-		Tasks.message = "All sources processed! Added " .. totalAdded .. " entries total."
+		Tasks.targetProgress = 100
+		Tasks.status = "complete"
+		Tasks.message = "Database Loaded"
+		Tasks.completedTime = globals.RealTime()
 
 		-- Update last fetch time
 		Fetcher.Config.LastAutoFetch = os.time()
@@ -344,15 +335,6 @@ function Fetcher.FetchAll(database, callback, silent)
 				Fetcher.Memory.ForceCleanup()
 				callbacks.Unregister("Draw", "FetcherMainTask")
 			end
-
-			-- Perform smooth progress interpolation
-			if Fetcher.UI.currentProgress ~= Fetcher.UI.targetProgress then
-				Fetcher.UI.currentProgress = Fetcher.UI.currentProgress
-					+ (Fetcher.UI.targetProgress - Fetcher.UI.currentProgress) * Fetcher.Config.SmoothingFactor
-
-				-- Update the task progress
-				Tasks.progress = math.floor(Fetcher.UI.currentProgress)
-			end
 		else
 			-- Task is complete, clean up
 			callbacks.Unregister("Draw", "FetcherMainTask")
@@ -375,32 +357,11 @@ function Fetcher.FetchAll(database, callback, silent)
 					local callbackSuccess = pcall(coroutine.resume, callbackTask)
 					if not callbackSuccess then
 						print("[Database Fetcher] Warning: Callback failed")
-
 						-- Emergency cleanup if callback fails
 						Fetcher.Memory.EmergencyCleanup()
 					end
 				end)
 			end
-
-			-- Show notification if enabled
-			if Fetcher.Config.NotifyOnFetchComplete and not silent then
-				printc(
-					0,
-					255,
-					0,
-					255,
-					string.format("[Database Fetcher] Update complete: Added %d entries", totalAdded)
-				)
-			end
-
-			-- Keep the progress bar visible for a moment
-			local startTime = globals.RealTime()
-			callbacks.Register("Draw", "FetcherCleanup", function()
-				if globals.RealTime() > startTime + 2 then
-					Tasks.Reset()
-					callbacks.Unregister("Draw", "FetcherCleanup")
-				end
-			end)
 
 			-- Ensure complete memory cleanup
 			Fetcher.Memory.ForceCleanup()
