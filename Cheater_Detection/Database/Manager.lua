@@ -20,7 +20,7 @@ Manager.Config = {
 	MaxEntries = 20000, -- Maximum number of database entries (performance optimization)
 }
 
--- Initialize database system completely
+-- Modified initialize function to use validation instead of full reload
 function Manager.Initialize(options)
 	-- Import other modules *inside* the function to prevent circular dependencies
 	local Database = require("Cheater_Detection.Database.Database")
@@ -33,28 +33,52 @@ function Manager.Initialize(options)
 		Manager.Config[k] = v
 	end
 
-	-- Load local database first
+	-- Load local database first without resetting if already loaded
 	local startTime = globals.RealTime()
-	Database.LoadDatabase(false) -- Not silent, show loading message
 
-	-- If auto-fetch is enabled, set up fetcher
+	-- Use the safe load that doesn't reset existing database
+	Database.LoadDatabaseSafe(false)
+
+	-- Configure validation mode based on options
+	Database.Config.ValidationMode = options.ValidationMode or true
+	Database.Config.ValidateOnly = options.ValidateOnly or false
+
+	-- If auto-fetch is enabled, set up validation instead of full fetch
 	if Manager.Config.AutoFetchOnLoad then
 		-- Configure fetcher
 		Fetcher.Config.AutoFetchOnLoad = true
 		Fetcher.Config.NotifyOnFetchComplete = true
 
-		-- Schedule fetch for next frame to ensure everything is loaded
+		-- Schedule validation for next frame to ensure everything is loaded
 		local firstUpdateDone = false
-		callbacks.Register("Draw", "CDDatabaseManager_InitialFetch", function()
+		callbacks.Register("Draw", "CDDatabaseManager_InitialValidation", function()
 			if not firstUpdateDone then
 				firstUpdateDone = true
-				Fetcher.AutoFetch(Database)
-				callbacks.Unregister("Draw", "CDDatabaseManager_InitialFetch")
+
+				if Database.State.entriesCount > 0 then
+					-- Database already loaded, validate only
+					printc(
+						100,
+						200,
+						255,
+						255,
+						"[Database Manager] Validating existing database with "
+							.. Database.State.entriesCount
+							.. " entries"
+					)
+					Database.ValidateWithSources(false)
+				else
+					-- No database or empty, do a full fetch
+					printc(100, 200, 255, 255, "[Database Manager] No database found, fetching from sources")
+					Fetcher.AutoFetch(Database)
+				end
+
+				callbacks.Unregister("Draw", "CDDatabaseManager_InitialValidation")
 			end
 		end)
 	end
 
-	-- Return the fully initialized database
+	-- Return the database
 	return Database
 end
 
@@ -71,6 +95,19 @@ end
 function Manager.ForceUpdate()
 	local Database = require("Cheater_Detection.Database.Database")
 	Database.FetchUpdates(false)
+end
+
+-- Add function for validation only
+function Manager.ValidateDatabase()
+	local Database = require("Cheater_Detection.Database.Database")
+
+	if Database.State.entriesCount == 0 then
+		print("[Database Manager] No database loaded, fetching instead of validating")
+		return Manager.ForceUpdate()
+	end
+
+	print("[Database Manager] Starting database validation")
+	return Database.ValidateWithSources(false)
 end
 
 -- Get database stats
@@ -131,10 +168,23 @@ local function RegisterCommands()
 	end, "Remove unnecessary database entries to improve performance")
 end
 
+-- Register additional validation command
+local function RegisterValidationCommand()
+	Commands.Register("cd_validate", function()
+		Manager.ValidateDatabase()
+	end, "Validate database against sources without full reload")
+end
+
 -- Register commands without loading modules immediately
 callbacks.Register("Draw", "CDDatabaseManager_RegisterCommands", function()
 	RegisterCommands()
 	callbacks.Unregister("Draw", "CDDatabaseManager_RegisterCommands")
+end)
+
+-- Add call to register validation command
+callbacks.Register("Draw", "CDDatabaseManager_RegisterValidation", function()
+	RegisterValidationCommand()
+	callbacks.Unregister("Draw", "CDDatabaseManager_RegisterValidation")
 end)
 
 return Manager

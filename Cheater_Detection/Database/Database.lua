@@ -9,6 +9,7 @@ local G = require("Cheater_Detection.Utils.Globals")
 local Json = Common.Json
 local Database_import = require("Cheater_Detection.Database.Database_Import")
 local Database_Fetcher = require("Cheater_Detection.Database.Database_Fetcher")
+local Restore = require("Cheater_Detection.Database.Database_Restore")
 
 local Database = {
 	-- Internal data storage (direct table)
@@ -20,6 +21,9 @@ local Database = {
 		SaveInterval = 300, -- 5 minutes
 		DebugMode = false,
 		MaxEntries = 15000, -- Maximum entries to prevent memory issues
+		ValidationMode = true, -- Enable validation mode by default
+		BatchSize = 500, -- Process in smaller batches to prevent overflow
+		ValidateOnly = false, -- If true, only validates but doesn't add new entries
 	},
 
 	-- State tracking
@@ -27,6 +31,14 @@ local Database = {
 		entriesCount = 0,
 		isDirty = false,
 		lastSave = 0,
+	},
+
+	-- Validation statistics
+	ValidationStats = {
+		entriesExisting = 0,
+		entriesAdded = 0,
+		entriesSkipped = 0,
+		lastValidation = 0,
 	},
 }
 
@@ -421,6 +433,26 @@ function Database.FallbackSave()
 	return true
 end
 
+-- Enhanced load function that doesn't reset the database if it already exists
+function Database.LoadDatabaseSafe(silent)
+	-- If database is already loaded and has entries, don't reload completely
+	if Database.State.entriesCount > 0 then
+		if not silent then
+			printc(
+				100,
+				150,
+				255,
+				255,
+				"[Database] Using existing database with " .. Database.State.entriesCount .. " entries"
+			)
+		end
+		return true
+	end
+
+	-- Otherwise, perform normal load
+	return Database.LoadDatabase(silent)
+end
+
 -- Load database from disk
 function Database.LoadDatabase(silent)
 	local filePath = Database.GetFilePath()
@@ -550,6 +582,274 @@ function Database.GetStats()
 		memoryMB = collectgarbage("count") / 1024,
 		proofTypes = proofStats,
 	}
+end
+
+-- Validate database entries against source without complete reload
+function Database.ValidateDatabase(source, sourceName, sourceCause)
+	if not source then
+		return 0
+	end
+
+	-- Initialize counters
+	local added = 0
+	local skipped = 0
+	local existing = 0
+	local totalProcessed = 0
+
+	-- Track start time
+	local startTime = os.time()
+
+	-- Check if we have an existing database
+	if Database.State.entriesCount > 0 then
+		print("[Database] Validating against existing database with " .. Database.State.entriesCount .. " entries")
+	else
+		print("[Database] No existing database, will create new entries")
+	end
+
+	-- Define a processing function that works with strings only
+	local function processValue(steamId, data)
+		-- Skip invalid IDs
+		if not steamId or #steamId < 15 or not steamId:match("^%d+$") then
+			skipped = skipped + 1
+			return
+		end
+
+		-- Check if entry already exists
+		if Database.data[steamId] then
+			existing = existing + 1
+
+			-- Only update if the new data has better information and we're not in validate-only mode
+			if type(data) == "table" and not Database.Config.ValidateOnly then
+				local existingEntry = Database.data[steamId]
+
+				-- Update name if better
+				if
+					data.Name
+					and data.Name ~= "Unknown"
+					and (not existingEntry.Name or existingEntry.Name == "Unknown")
+				then
+					existingEntry.Name = data.Name
+					Database.State.isDirty = true
+				end
+
+				-- Update proof if better
+				local newProof = data.proof or data.cause or sourceCause
+				if
+					newProof
+					and newProof ~= "Unknown"
+					and (not existingEntry.proof or existingEntry.proof == "Unknown")
+				then
+					existingEntry.proof = newProof
+					Database.State.isDirty = true
+				end
+			end
+		else
+			-- Only add if we're not in validate-only mode
+			if not Database.Config.ValidateOnly then
+				-- Add new entry with minimal data
+				Database.data[steamId] = {
+					Name = (type(data) == "table" and data.Name) or "Unknown",
+					proof = (type(data) == "table" and (data.proof or data.cause)) or sourceCause or "Unknown",
+				}
+
+				-- Set priority in player list with error handling
+				pcall(function()
+					playerlist.SetPriority(steamId, 10)
+				end)
+
+				Database.State.entriesCount = Database.State.entriesCount + 1
+				Database.State.isDirty = true
+				added = added + 1
+			else
+				skipped = skipped + 1
+			end
+		end
+
+		-- Track progress
+		totalProcessed = totalProcessed + 1
+
+		-- Periodically yield and update UI for large data sets
+		if totalProcessed % 1000 == 0 and G and G.UI and G.UI.UpdateProgress then
+			G.UI.UpdateProgress(nil, "Validated " .. totalProcessed .. " entries...")
+			coroutine.yield()
+		end
+	end
+
+	-- If source is a table, process entries
+	if type(source) == "table" then
+		-- Process in batches to prevent memory issues
+		local keys = {}
+		local batchCount = 0
+
+		-- Collect keys first (for tables with many entries)
+		for steamId in pairs(source) do
+			table.insert(keys, steamId)
+
+			-- Process in batches
+			if #keys >= Database.Config.BatchSize then
+				-- Process this batch
+				for _, key in ipairs(keys) do
+					processValue(key, source[key])
+				end
+
+				-- Clear batch and force GC
+				keys = {}
+				collectgarbage("step", 100)
+				coroutine.yield()
+				batchCount = batchCount + 1
+
+				-- Update progress
+				if G and G.UI and G.UI.UpdateProgress then
+					G.UI.UpdateProgress(nil, "Validated batch " .. batchCount .. "...")
+				end
+			end
+		end
+
+		-- Process remaining keys
+		for _, key in ipairs(keys) do
+			processValue(key, source[key])
+		end
+	end
+
+	-- Update validation statistics
+	Database.ValidationStats.entriesExisting = Database.ValidationStats.entriesExisting + existing
+	Database.ValidationStats.entriesAdded = Database.ValidationStats.entriesAdded + added
+	Database.ValidationStats.entriesSkipped = Database.ValidationStats.entriesSkipped + skipped
+	Database.ValidationStats.lastValidation = startTime
+
+	-- Log result
+	print(
+		string.format(
+			"[Database] Validation complete for %s: %d added, %d existing, %d skipped",
+			sourceName or "source",
+			added,
+			existing,
+			skipped
+		)
+	)
+
+	-- Auto-save if we've made changes
+	if Database.State.isDirty and added > 0 and Database.Config.AutoSave then
+		print("[Database] Changes detected, scheduling save...")
+		-- Schedule save for next frame to prevent stack overflow
+		callbacks.Register("Draw", "DatabaseValidationSave", function()
+			callbacks.Unregister("Draw", "DatabaseValidationSave")
+			Database.SaveDatabase()
+		end)
+	end
+
+	-- Return added count for compatibility with existing fetch functions
+	return added
+end
+
+-- Add utility functions to trigger validation
+function Database.ValidateWithSources(silent)
+	if not Database_Fetcher then
+		if not silent then
+			print("[Database] Error: Database_Fetcher module not found")
+		end
+		return false
+	end
+
+	-- Reset validation statistics
+	Database.ValidationStats.entriesExisting = 0
+	Database.ValidationStats.entriesAdded = 0
+	Database.ValidationStats.entriesSkipped = 0
+	Database.ValidationStats.lastValidation = os.time()
+
+	-- Get active sources with fallback
+	local sources = Database_Fetcher.Sources
+	if not sources then
+		if not silent then
+			print("[Database] Error: No sources found")
+		end
+		return false
+	end
+
+	-- Enable validation mode
+	local prevValidateOnly = Database.Config.ValidateOnly
+	Database.Config.ValidateOnly = false -- We want to add missing entries
+
+	-- Create a coroutine to process sources one by one
+	local validationTask = coroutine.create(function()
+		local totalAdded = 0
+
+		for i, source in ipairs(sources) do
+			if source and source.url and source.cause then
+				-- Set up user feedback
+				if G and G.UI and G.UI.UpdateProgress then
+					G.UI.UpdateProgress((i - 1) / #sources * 100, "Validating source " .. i .. "/" .. #sources)
+				end
+
+				-- Get content from source
+				if Database_Fetcher.ProcessSourceInBatches then
+					-- Use the batch processor from Fetcher for memory efficiency
+					local content = Database_Fetcher.ProcessSourceInBatches(source, Database)
+					totalAdded = totalAdded + (tonumber(content) or 0)
+				else
+					-- Fall back to direct processing
+					local content = {}
+					local rawContent = pcall(function()
+						return http.Get(source.url)
+					end)
+					if rawContent then
+						local added = Database.ValidateDatabase(content, source.name, source.cause)
+						totalAdded = totalAdded + added
+					end
+				end
+
+				-- Yield to prevent freezing
+				coroutine.yield()
+			end
+		end
+
+		-- Restore validation mode
+		Database.Config.ValidateOnly = prevValidateOnly
+
+		-- Show completion
+		if G and G.UI and G.UI.UpdateProgress then
+			G.UI.UpdateProgress(100, "Validation complete")
+		end
+
+		if not silent then
+			printc(
+				0,
+				255,
+				0,
+				255,
+				string.format(
+					"[Database] Validation complete: %d added, %d existing, %d skipped",
+					Database.ValidationStats.entriesAdded,
+					Database.ValidationStats.entriesExisting,
+					Database.ValidationStats.entriesSkipped
+				)
+			)
+		end
+
+		-- Save if needed
+		if Database.State.isDirty and Database.ValidationStats.entriesAdded > 0 then
+			Database.SaveDatabase()
+		end
+
+		return totalAdded
+	end)
+
+	-- Register the validation task
+	callbacks.Register("Draw", "DatabaseValidationTask", function()
+		if coroutine.status(validationTask) ~= "dead" then
+			local success, result = pcall(coroutine.resume, validationTask)
+			if not success then
+				print("[Database] Validation error: " .. tostring(result))
+				callbacks.Unregister("Draw", "DatabaseValidationTask")
+				Database.Config.ValidateOnly = prevValidateOnly
+			end
+		else
+			callbacks.Unregister("Draw", "DatabaseValidationTask")
+			Database.Config.ValidateOnly = prevValidateOnly
+		end
+	end)
+
+	return true
 end
 
 -- Import function for database updating
@@ -740,9 +1040,25 @@ end
 
 -- Initialize the database
 local function InitializeDatabase()
-	-- Load existing database first
-	Database.LoadDatabase()
+	-- Try to restore the database first
+	if Restore.RestoreDatabase(Database) then
+		-- Successfully restored, skip loading from file
+		print("[Database] Successfully restored database from memory")
 
+		-- Clean up if over limit
+		if Database.State.entriesCount > Database.Config.MaxEntries then
+			local removed = Database.Cleanup()
+			if removed > 0 and Database.Config.DebugMode then
+				print(string.format("[Database] Cleaned %d entries to stay under limit", removed))
+			end
+		end
+
+		return true
+	end
+
+	-- Otherwise, continue with normal database loading
+	Database.LoadDatabase()
+	Database.State.isDirty = true
 	-- Import additional data
 	Database.ImportDatabase()
 
@@ -762,14 +1078,8 @@ local function InitializeDatabase()
 	end)
 end
 
--- Register unload callback
-callbacks.Unregister("Unload", "CDDatabase_Unload")
-callbacks.Register("Unload", "CDDatabase_Unload", OnUnload)
-
--- Register commands
-RegisterCommands()
-
--- Initialize the database when this module is loaded
-InitializeDatabase()
+InitializeDatabase() -- Initialize the database when this module is loaded
+RegisterCommands() -- Register commands
+callbacks.Register("Unload", "CDDatabase_Unload", OnUnload) -- Register unload callback
 
 return Database

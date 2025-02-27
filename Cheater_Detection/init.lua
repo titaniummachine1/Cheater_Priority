@@ -4,8 +4,29 @@
 ]]
 
 -- Global unload function to clean up resources
+-- Modify the unload function to preserve the database in memory
 local function UnloadCheaterDetection()
 	print("[Cheater Detection] Unloading modules and cleaning up resources...")
+
+	-- Track if we have a database before unloading
+	local hasDatabase = false
+	local databaseContent = nil
+
+	-- Attempt to preserve database content
+	pcall(function()
+		local Database = package.loaded["Cheater_Detection.Database.Database"]
+		if Database and Database.data and type(Database.data) == "table" then
+			if Database.State and Database.State.entriesCount > 0 then
+				-- We have a valid database, preserve it in global memory
+				_G._CheaterDetectionDatabaseBackup = {
+					data = Database.data,
+					entriesCount = Database.State.entriesCount,
+					lastSave = Database.State.lastSave,
+				}
+				hasDatabase = true
+			end
+		end
+	end)
 
 	-- Step 1: Unregister all callbacks
 	local callbackNames = {
@@ -47,21 +68,19 @@ local function UnloadCheaterDetection()
 	for moduleName in pairs(package.loaded) do
 		if moduleName:find("^" .. modulePrefix) then
 			package.loaded[moduleName] = nil
-			if _G[moduleName] then
+			if _G[moduleName] and moduleName ~= "Cheater_Detection.Database.Database" then
 				_G[moduleName] = nil
 			end
 		end
 	end
 
-	-- Step 3: Clear any known global tables and variables
+	-- Step 3: Clear any known global tables and variables (except database backup)
 	local globals = {
 		"G",
 		"Detections",
 		"Parsers",
 		"Tasks",
 		"Sources",
-		"Database",
-		"Database_Fetcher",
 		"DBManager",
 		"Menu",
 	}
@@ -77,11 +96,10 @@ local function UnloadCheaterDetection()
 		end
 	end
 
-	-- Step 4: Force multiple garbage collections
-	collectgarbage("collect")
-	collectgarbage("collect")
+	-- Step 4: Force multiple garbage collections but less aggressively
+	collectgarbage("step", 500)
 
-	print("[Cheater Detection] Unload complete")
+	print("[Cheater Detection] Unload complete" .. (hasDatabase and " (preserved database in memory)" or ""))
 end
 
 -- Handle module unloading if it's already loaded
@@ -93,7 +111,7 @@ end
 -- Register the unload function to run on script unload
 callbacks.Register("Unload", "CD_Unload", UnloadCheaterDetection)
 
--- Create the module
+-- Create the module with added validation functions
 local CheaterDetection = {
 	Version = "2.0.0-beta",
 	UnloadModule = UnloadCheaterDetection,
@@ -106,6 +124,10 @@ local Main = require("Cheater_Detection.Main")
 CheaterDetection.ReloadDatabase = Main.ReloadDatabase
 CheaterDetection.UpdateDatabase = Main.UpdateDatabase
 CheaterDetection.GetDatabaseStats = Main.GetDatabaseStats
+CheaterDetection.ValidateDatabase = function()
+	local DBManager = require("Cheater_Detection.Database.Manager")
+	return DBManager.ValidateDatabase()
+end
 
 -- Add helper functions for UI safety
 CheaterDetection.Utils = {
