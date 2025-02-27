@@ -255,6 +255,22 @@ function Common.isJson(content)
     return firstChar == "{" or firstChar == "["
 end
 
+-- Safe integer rounding function for drawing coordinates
+Common.RoundCoord = function(value)
+    if not value then return 0 end
+    
+    if type(value) ~= "number" then
+        return 0
+    end
+    
+    -- Check for NaN and infinity
+    if value ~= value or value == math.huge or value == -math.huge then
+        return 0
+    end
+    
+    return math.floor(value + 0.5)
+end
+
 --[[ Callbacks ]]
 local function OnUnload()                        -- Called when the script is unloaded
     UnloadLib()                                  --unloading lualib

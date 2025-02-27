@@ -246,10 +246,10 @@ function Tasks.ProcessAll()
     return totalResult
 end
 
--- Draw progress UI function with text wrapping
+-- Draw progress UI function with text wrapping and proper integer rounding
 function Tasks.DrawProgressUI()
     -- Set up basic dimensions
-    local x, y = 15, 15
+    local x, y = math.floor(15), math.floor(15)
     local width = 280  -- Slightly wider to fit more text
     local height = 80  -- Slightly taller to fit wrapped text
     local padding = 10
@@ -275,8 +275,8 @@ function Tasks.DrawProgressUI()
     -- Split message into multiple lines if needed
     local message = Tasks.message or ""
     local maxWidth = width - 2 * padding
-    local messageX = x + padding
-    local messageY = y + padding + 22
+    local messageX = math.floor(x + padding)
+    local messageY = math.floor(y + padding + 22)
     
     -- Wrap text to fit window width
     local lines = {}
@@ -316,23 +316,26 @@ function Tasks.DrawProgressUI()
     -- Display lines (limit to 3 lines maximum to fit in the UI)
     local maxLines = 3
     for i = 1, math.min(#lines, maxLines) do
+        -- Round y position to integer
+        local textY = math.floor(messageY + (i-1) * 14)
+        
         -- Draw shadow
         draw.Color(0, 0, 0, 180)
-        draw.Text(messageX + 1, messageY + (i-1) * 14 + 1, lines[i])
+        draw.Text(messageX + 1, textY + 1, lines[i])
         
         -- Draw text
         draw.Color(255, 255, 255, 255)
-        draw.Text(messageX, messageY + (i-1) * 14, lines[i])
+        draw.Text(messageX, textY, lines[i])
     end
     
     -- Show "..." if we had to truncate lines
     if #lines > maxLines then
         draw.Color(255, 255, 255, 200)
-        draw.Text(messageX, messageY + maxLines * 14, "...")
+        draw.Text(messageX, math.floor(messageY + maxLines * 14), "...")
     end
     
     -- Progress bar background
-    local barY = y + height - padding - barHeight
+    local barY = math.floor(y + height - padding - barHeight)
     draw.Color(40, 40, 40, 200)
     draw.FilledRect(x + padding, barY, x + width - padding, barY + barHeight)
     
@@ -344,7 +347,11 @@ function Tasks.DrawProgressUI()
     -- Progress percentage text
     local percent = string.format("%d%%", Tasks.progress)
     draw.Color(255, 255, 255, 255)
-    draw.Text(x + width - padding - draw.GetTextSize(percent), barY, percent)
+    draw.Text(
+        math.floor(x + width - padding - draw.GetTextSize(percent)), 
+        barY, 
+        percent
+    )
 end
 
 return Tasks

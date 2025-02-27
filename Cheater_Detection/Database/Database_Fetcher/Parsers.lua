@@ -32,6 +32,18 @@ Parsers.Config = {
     MaxTableEntries = 1000      -- Maximum entries to store in a table before switching to incremental processing
 }
 
+-- Configuration enhancements for TF2DB parser
+Parsers.Config.TF2DB = {
+    ChunkSize = 32768,           -- 32KB chunks for string processing
+    MaxContentSize = 5 * 1024 * 1024, -- 5MB max size for any source
+    EmergencyTimeoutSec = 10,    -- Maximum processing time before emergency bailout
+    ForceStringOnly = true,      -- Always use string-based parser (never use JSON)
+    EstimateEntriesPerKB = 2,    -- Estimate 2 entries per KB of content for progress
+    MaxEntriesPerSource = 50000, -- Maximum entries to process from a single source
+    FastSkipMode = true,         -- Skip detailed parsing for very large files
+    LogMemoryUsage = true        -- Log memory usage during parsing
+}
+
 -- Create weak reference tables for temporary storage (both keys and values are weak)
 Parsers.TempStorage = setmetatable({}, { __mode = "kv" })
 
@@ -331,7 +343,7 @@ function Parsers.ProcessRawList(content, database, sourceName, sourceCause)
 
         -- Yield occasionally during counting to prevent freezing
         if lineCount % 10000 == 0 then
-            Tasks.message = "Counting lines in " .. sourceName .. "... (" .. lineCount .. ")"
+            Tasks.message = "Counting lines in " .. sourceName .. " (" .. lineCount .. ")"
             coroutine.yield()
         end
     end
@@ -550,150 +562,243 @@ function Parsers.ProcessTF2DB(content, database, source)
         Parsers.LogError("Missing required parameters for ProcessTF2DB")
         return 0
     end
-
+    
+    -- Get source metadata
     local sourceName = source.name or "Unknown TF2DB Source"
-    Tasks.message = "Processing " .. sourceName .. "..."
-    coroutine.yield()
-
-    -- Skip JSON parsing entirely for large content, use string matching instead
-    if #content > 100000 or Parsers.Config.UseStringOnly then
-        return Parsers.ProcessTF2DBString(content, database, source)
+    
+    -- Check for extremely large content and apply limits
+    if #content > Parsers.Config.TF2DB.MaxContentSize then
+        Parsers.LogError("Content too large from " .. sourceName .. 
+                        " (" .. math.floor(#content/1024/1024) .. "MB), truncating", 
+                        "Exceeds " .. math.floor(Parsers.Config.TF2DB.MaxContentSize/1024/1024) .. "MB limit")
+        
+        -- Truncate content to avoid memory issues
+        content = content:sub(1, Parsers.Config.TF2DB.MaxContentSize)
     end
     
-    -- For smaller content, try JSON parsing if available
-    if Json then
-        local success, data = pcall(function() return Json.decode(content) end)
-        
-        -- Clear content from memory immediately
-        local contentSize = #content
-        content = nil
-        collectgarbage("collect")
-        
-        if success and type(data) == "table" then
-            -- We have valid JSON data
-            -- ...existing code...
-        else
-            -- JSON parsing failed, switch to string-based approach
-            return Parsers.ProcessTF2DBString(content, database, source)
+    -- Always use string-based processing now - no JSON parsing at all
+    Tasks.message = "Processing " .. sourceName .. " with string parser..."
+    
+    -- Set up emergency bailout timer
+    local startTime = globals.RealTime()
+    local bailoutTime = startTime + Parsers.Config.TF2DB.EmergencyTimeoutSec
+    local bailoutTask = coroutine.create(function()
+        while true do
+            if globals.RealTime() > bailoutTime then
+                Parsers.LogError("Emergency bailout: processing time exceeded " .. 
+                                Parsers.Config.TF2DB.EmergencyTimeoutSec .. " seconds")
+                return true
+            end
+            coroutine.yield(false)
         end
-    else
-        -- No JSON parser available, use string approach
-        return Parsers.ProcessTF2DBString(content, database, source)
+    end)
+    
+    -- Log initial memory usage
+    if Parsers.Config.TF2DB.LogMemoryUsage then
+        local memBefore = collectgarbage("count") / 1024
+        print(string.format("[Parsers] Starting TF2DB processing, memory: %.2f MB", memBefore))
     end
-
-    -- ...existing code...
+    
+    -- Process in chunks with memory tracking
+    local count = Parsers.ProcessTF2DBChunks(content, database, source, bailoutTask)
+    
+    -- Log final memory usage
+    if Parsers.Config.TF2DB.LogMemoryUsage then
+        local memAfter = collectgarbage("count") / 1024
+        print(string.format("[Parsers] Finished TF2DB processing, memory: %.2f MB", memAfter))
+    end
+    
+    -- Content no longer needed, clear it immediately
+    content = nil
+    collectgarbage("collect")
+    
+    return count
 end
 
--- Direct string parsing for TF2DB with zero table operations
-function Parsers.ProcessTF2DBString(content, database, source)
+-- Chunk-based parser that avoids creating any table of entries
+function Parsers.ProcessTF2DBChunks(content, database, source, bailoutTask)
     local sourceName = source.name or "Unknown Source"
-
+    local sourceCause = source.cause or "Unknown"
+    
     -- Validate content
     if not content or #content == 0 then
-        Parsers.LogError("Empty TF2DB content from " .. sourceName)
         return 0
     end
-
-    -- Track stats with simple counters (no tables)
+    
+    -- Initialize counters with direct variables (no tables)
     local count = 0
     local skipped = 0
     local invalid = 0
     local processed = 0
-
-    -- Process in string chunks without creating any intermediate tables
-    local chunkSize = 65536 -- 64KB chunks
     local contentLen = #content
-    local currentPos = 1
-    local estimatedTotal = 0
     
-    -- Do a quick count of likely entries
-    if contentLen < 1000000 then
-        estimatedTotal = select(2, content:gsub('"steamid"', '')) or 0
+    -- Estimate total entries for progress reporting
+    local estimatedTotal = math.floor(contentLen / 1024 * Parsers.Config.TF2DB.EstimateEntriesPerKB)
+    
+    -- Fast detection of SteamID format to optimize parsing strategy
+    local hasSteamID64Format = content:match('"steamid":%s*"[0-9]+"')
+    local hasSteamID3Format = content:match('"steamid":%s*"\\[U:1:[0-9]+\\]"')
+    local hasSteamID2Format = content:match('"steamid":%s*"STEAM_0:[01]:[0-9]+"')
+    
+    -- Select the most appropriate pattern based on content
+    local steamIDPattern = nil
+    if hasSteamID64Format then
+        steamIDPattern = '"steamid":%s*"([0-9]+)"'
+    elseif hasSteamID3Format then
+        steamIDPattern = '"steamid":%s*"(%[U:1:[0-9]+%])"'
+    elseif hasSteamID2Format then
+        steamIDPattern = '"steamid":%s*"(STEAM_0:[01]:[0-9]+)"'
     else
-        estimatedTotal = math.floor(contentLen / 500) -- Rough estimate based on average entry size
+        -- Fallback pattern that matches any format
+        steamIDPattern = '"steamid":%s*"([^"]+)"'
     end
     
-    Tasks.message = "Estimating " .. estimatedTotal .. " entries in " .. sourceName
+    -- Determine name pattern
+    local namePattern = nil
+    if content:match('"name":%s*"[^"]+"') then
+        namePattern = '"name":%s*"([^"]*)"'
+    elseif content:match('"player_name":%s*"[^"]+"') then
+        namePattern = '"player_name":%s*"([^"]*)"'
+    else
+        namePattern = '"name":%s*"([^"]*)"'
+    end
+    
+    Tasks.message = "Parsing " .. sourceName .. " (" .. math.floor(contentLen/1024) .. "KB)"
     coroutine.yield()
-
-    -- Process chunk by chunk
+    
+    -- Process in chunks to prevent memory issues
+    local currentPos = 1
+    local chunkSize = Parsers.Config.TF2DB.ChunkSize
+    
+    -- Set up initial progress
+    local lastProgressUpdate = globals.RealTime()
+    
     while currentPos <= contentLen do
+        -- Check for emergency bailout
+        local shouldBail = false
+        pcall(function()
+            local _, bailResult = coroutine.resume(bailoutTask)
+            shouldBail = bailResult == true
+        end)
+        
+        if shouldBail then
+            Tasks.message = "Emergency bailout: processed " .. count .. " entries"
+            return count
+        end
+        
+        -- Define the chunk
         local endPos = math.min(currentPos + chunkSize, contentLen)
         local chunk = content:sub(currentPos, endPos)
-        
-        -- Find all steamid entries in this chunk
-        local chunkPos = 1
         local chunkLen = #chunk
         
-        while chunkPos <= chunkLen do
-            local steamIDStart = chunk:find('"steamid":%s*"', chunkPos)
-            if not steamIDStart then break end
-            
-            -- Extract the steamID
-            chunkPos = steamIDStart + 10
-            local steamIDEnd = chunk:find('"', chunkPos)
-            if not steamIDEnd then break end
-            
-            local steamID = chunk:sub(chunkPos, steamIDEnd - 1)
-            chunkPos = steamIDEnd + 1
-            
-            -- Extract player name if possible (but don't create tables for it)
-            local name = "Unknown"
-            local nameStart = chunk:find('"name":%s*"', math.max(1, steamIDStart - 100), steamIDStart + 200)
-            if nameStart then
-                local nameValueStart = nameStart + 8
-                local nameEnd = chunk:find('"', nameValueStart)
-                if nameEnd and nameEnd - nameValueStart < 100 then
-                    name = chunk:sub(nameValueStart, nameEnd - 1)
+        -- Fast mode for large files just scans for IDs without context
+        if Parsers.Config.TF2DB.FastSkipMode and contentLen > 1000000 then
+            -- Just directly match all SteamIDs in the chunk
+            for steamID in chunk:gmatch(steamIDPattern) do
+                -- Convert to SteamID64 if needed
+                local steamID64 = steamID:match("^%d+$") and #steamID >= 15 and steamID or
+                                  Parsers.ConvertToSteamID64(steamID)
+                
+                -- Add to database if valid and limit not reached
+                if steamID64 and not database.content[steamID64] and 
+                   count < Parsers.Config.TF2DB.MaxEntriesPerSource then
+                    
+                    database.content[steamID64] = {
+                        Name = "Unknown", -- In fast mode we don't parse names
+                        proof = sourceCause
+                    }
+                    count = count + 1
+                elseif steamID64 then
+                    skipped = skipped + 1
+                else
+                    invalid = invalid + 1
                 end
-            end
-            
-            -- Convert to SteamID64
-            local steamID64 = steamID:match("^%d+$") and steamID or Parsers.ConvertToSteamID64(steamID)
-            
-            -- Add to database directly without intermediate tables
-            if steamID64 and not database.content[steamID64] then
-                database.content[steamID64] = {
-                    Name = name,
-                    proof = source.cause
-                }
-                count = count + 1
-            elseif steamID64 then
-                skipped = skipped + 1
-            else
-                invalid = invalid + 1
-            end
-            
-            processed = processed + 1
-            
-            -- Update progress periodically and yield
-            if processed % Parsers.Config.YieldInterval == 0 then
-                local progressPct = estimatedTotal > 0 and math.floor((processed / estimatedTotal) * 100) or 0
-                if progressPct > 100 then progressPct = 99 end -- Cap at 99% if our estimate was low
                 
-                Tasks.message = string.format("Processing %s: %d%% (%d entries)",
-                    sourceName, progressPct, count)
-                coroutine.yield()
+                processed = processed + 1
+            end
+        else
+            -- Regular chunk processing with name extraction
+            local chunkPos = 1
+            
+            while chunkPos <= chunkLen do
+                -- Find a steamID entry
+                local steamIDStart, steamIDEnd, steamID = chunk:find(steamIDPattern, chunkPos)
+                if not steamIDStart then break end
                 
-                -- Force GC periodically
-                collectgarbage("step", 100)
+                -- Extract the steamID
+                chunkPos = steamIDEnd + 1
+                
+                -- Find name near this steamID
+                local name = "Unknown"
+                
+                -- Look within a reasonable range for name
+                local nameSearchStart = math.max(1, steamIDStart - 100)
+                local nameSearchEnd = math.min(chunkLen, steamIDEnd + 100)
+                local nameStart, nameEnd, extractedName = 
+                    chunk:find(namePattern, nameSearchStart, nameSearchEnd)
+                
+                if nameStart and extractedName then
+                    name = extractedName
+                end
+                
+                -- Convert to SteamID64 if needed
+                local steamID64 = steamID:match("^%d+$") and #steamID >= 15 and steamID or
+                                  Parsers.ConvertToSteamID64(steamID)
+                
+                -- Add to database if valid and limit not reached
+                if steamID64 and not database.content[steamID64] and 
+                   count < Parsers.Config.TF2DB.MaxEntriesPerSource then
+                   
+                    database.content[steamID64] = {
+                        Name = name,
+                        proof = sourceCause
+                    }
+                    count = count + 1
+                elseif steamID64 then
+                    skipped = skipped + 1
+                else
+                    invalid = invalid + 1
+                end
+                
+                processed = processed + 1
             end
         end
         
         -- Move to next chunk
         currentPos = endPos + 1
-        collectgarbage("step", 200)
-        coroutine.yield()
+        
+        -- Update progress periodically (don't flood UI updates)
+        if globals.RealTime() - lastProgressUpdate > 0.25 then
+            lastProgressUpdate = globals.RealTime()
+            local progressPct = math.min(99, math.floor((processed / estimatedTotal) * 100))
+            local entriesPerSec = processed / (globals.RealTime() - startTime)
+            
+            Tasks.message = string.format("%s: %d%% (%d entries @ %.0f/sec)",
+                sourceName, progressPct, count, entriesPerSec)
+                
+            -- Update memory usage
+            if Parsers.Config.TF2DB.LogMemoryUsage then
+                local memNow = collectgarbage("count") / 1024
+                print(string.format("[Parsers] Progress: %d%%, Memory: %.2f MB", 
+                    progressPct, memNow))
+            end
+            
+            coroutine.yield()
+            collectgarbage("step", 200)
+        end
+        
+        -- If we're approaching entry limit, bail out early
+        if count >= Parsers.Config.TF2DB.MaxEntriesPerSource * 0.9 then
+            Tasks.message = string.format("Approaching limit of %d entries, completing early", 
+                Parsers.Config.TF2DB.MaxEntriesPerSource)
+            break
+        end
     end
     
-    -- Set to 100% when done
+    -- Final progress update
     Tasks.message = string.format("Finished %s: %d added, %d skipped, %d invalid",
         sourceName, count, skipped, invalid)
     coroutine.yield()
-    
-    -- Clean up
-    content = nil
-    collectgarbage("collect")
     
     return count
 end
@@ -874,6 +979,58 @@ end
 function Parsers.StringOnlyMode(enable)
     Parsers.Config.UseStringOnly = (enable ~= false)
     return Parsers.Config.UseStringOnly
+end
+
+-- New diagnostic function to detect memory issues
+function Parsers.DiagnoseMemoryUse()
+    local results = {
+        totalMemory = collectgarbage("count") / 1024,
+        gcPause = collectgarbage("setpause", 100),  -- Get current and set to 100%
+        gcStepmul = collectgarbage("setstepmul", 5000), -- Get current and set to 5000%
+    }
+    
+    -- Force more aggressive GC
+    collectgarbage("collect")
+    collectgarbage("collect")
+    
+    -- Memory after collection
+    results.memoryAfterGC = collectgarbage("count") / 1024
+    results.memoryDifference = results.totalMemory - results.memoryAfterGC
+    
+    -- Restore original GC settings
+    collectgarbage("setpause", results.gcPause)
+    collectgarbage("setstepmul", results.gcStepmul)
+    
+    -- Output diagnostic info
+    print("--- Memory Diagnostic ---")
+    print(string.format("Total memory: %.2f MB", results.totalMemory))
+    print(string.format("After GC: %.2f MB (saved %.2f MB)", 
+        results.memoryAfterGC, results.memoryDifference))
+    print("------------------------")
+    
+    return results
+end
+
+-- Add emergency reset function
+function Parsers.EmergencyReset()
+    -- Unregister any parser callbacks to stop processing
+    pcall(function()
+        for _, name in ipairs({"FetcherMainTask", "FetcherCallback", "FetcherSingleSource", 
+                              "TasksProcessCleanup", "DatabaseSave"}) do
+            callbacks.Unregister("Draw", name)
+        end
+    end)
+    
+    -- Clear any temporary storage
+    Parsers.TempStorage = setmetatable({}, {__mode = "kv"})
+    
+    -- Force aggressive GC
+    collectgarbage("stop")  -- Stop GC temporarily to avoid it running while we clean
+    collectgarbage("collect")
+    collectgarbage("collect")
+    collectgarbage("restart")  -- Restart GC
+    
+    print("[Parsers] Emergency reset performed")
 end
 
 return Parsers

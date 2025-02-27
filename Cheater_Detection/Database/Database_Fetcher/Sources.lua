@@ -1,22 +1,15 @@
--- Source definitions for database fetching with updated URLs and fallbacks
+-- Source definitions with safer processing options
 
 local Sources = {}
 
 -- List of available sources
 Sources.List = {
+    -- High-priority sources first (smaller and more reliable)
     {
-        name = "bots.tf",
-        url = "https://raw.githubusercontent.com/PazerOP/tf2_bot_detector/master/staging/cfg/playerlist.official.json",
-        -- Switched from bots.tf to PazerOP's GitHub JSON which contains the same bot data
-        cause = "Bot",
-        parser = "tf2db" -- Changed parser to tf2db since it's JSON format
-    },
-    -- Fallback source for bots (in case the primary source fails)
-    {
-        name = "TF2BD Bots (backup)",
+        name = "TF2BD Bots",
         url = "https://raw.githubusercontent.com/wgetJane/tf2-catkill/master/bots.txt",
         cause = "Bot",
-        parser = "raw"
+        parser = "raw"  -- Raw parser is safer
     },
     {
         name = "d3fc0n6 Cheater List",
@@ -30,18 +23,13 @@ Sources.List = {
         cause = "Tacobot",
         parser = "raw"
     },
-    --[[{ --commented out to see if its the culprit of crash
-        name = "Sleepy List - Bots",
-        url = "https://raw.githubusercontent.com/surepy/tf2db-sleepy-list/main/playerlist.sleepy-bots.merged.json",
-        cause = "Bot",
-        parser = "tf2db"
-    },
+    -- Potentially problematic sources last
     {
-        name = "Sleepy List - RGL",
-        url = "https://raw.githubusercontent.com/surepy/tf2db-sleepy-list/main/playerlist.rgl-gg.json",
-        cause = "RGL Banned",
-        parser = "tf2db"
-    }]]
+        name = "bots.tf",
+        url = "https://raw.githubusercontent.com/PazerOP/tf2_bot_detector/master/staging/cfg/playerlist.official.json",
+        cause = "Bot",
+        parser = "tf2db" -- Use tf2db parser but with enhanced safety
+    },
 }
 
 -- Function to add a custom source
@@ -65,6 +53,30 @@ function Sources.AddSource(name, url, cause, parser)
 
     print("[Database Fetcher] Added new source: " .. name)
     return true
+end
+
+-- Utility function to enable/disable sources (e.g. for testing)
+function Sources.DisableSource(sourceIndex)
+    if sourceIndex < 1 or sourceIndex > #Sources.List then
+        print("[Database Fetcher] Invalid source index: " .. tostring(sourceIndex))
+        return false
+    end
+    
+    local source = Sources.List[sourceIndex]
+    source.__disabled = true
+    print("[Database Fetcher] Disabled source: " .. source.name)
+    return true
+end
+
+-- Get active sources (not disabled)
+function Sources.GetActiveSources()
+    local active = {}
+    for i, source in ipairs(Sources.List) do
+        if not source.__disabled then
+            table.insert(active, source)
+        end
+    end
+    return active
 end
 
 return Sources

@@ -9,13 +9,18 @@ local tahoma_bold = draw.CreateFont("Tahoma", 12, 800, FONTFLAG_OUTLINE)
 
 local ImMenu = Common.ImMenu
 
+-- Helper function for rounding coordinates
+local function roundCoord(value)
+    return math.floor(value + 0.5)
+end
+
 local function DrawMenu()
     ImMenu.BeginFrame(1)
 
     if G.Menu.Advanced.debug then
         draw.Color(255, 0, 0, 255)
         draw.SetFont(Fonts.Verdana)
-        draw.Text(20, 120, "Debug Mode!!! Some Features Might malfunction")
+        draw.Text(roundCoord(20), roundCoord(120), "Debug Mode!!! Some Features Might malfunction")
     end
 
     if gui.IsMenuOpen() and ImMenu.Begin("Cheater Detection", true) then
