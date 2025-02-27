@@ -7,6 +7,7 @@
 -- Import required modules
 local Common = require("Cheater_Detection.Utils.Common")
 local Commands = Common.Lib.Utils.Commands
+local Json = Common.Json
 
 -- Load components
 local Tasks = require("Cheater_Detection.Database.Database_Fetcher.Tasks")
@@ -66,6 +67,119 @@ function Fetcher.GetSourceDelay()
     end
 end
 
+-- Improved batch processing system that correctly tracks progress
+function Fetcher.ProcessSourceInBatches(source, database)
+    if not source or not source.url or not database then
+        return 0, "Invalid source configuration"
+    end
+    
+    -- Set up tracking variables
+    local addedCount = 0
+    local sourceUrl = source.url
+    local sourceName = source.name
+    local sourceRawData = nil
+    local errorMessage = nil
+    
+    -- Step 1: Download the content
+    Tasks.message = "Downloading from " .. sourceName .. "..."
+    sourceRawData = Parsers.Download(sourceUrl)
+    
+    -- If download failed, try a backup URL if available
+    if not sourceRawData or #sourceRawData == 0 then
+        -- Try GitHub fallback for bots.tf
+        if sourceName == "bots.tf" then
+            Tasks.message = "Primary source failed, trying backup..."
+            sourceRawData = Parsers.Download("https://raw.githubusercontent.com/PazerOP/tf2_bot_detector/master/staging/cfg/playerlist.official.json")
+        end
+        
+        -- Still failed
+        if not sourceRawData or #sourceRawData == 0 then
+            return 0, "Download failed"
+        end
+    end
+    
+    -- Step 2: Determine the parser to use
+    local parser = nil
+    if source.parser == "raw" then
+        parser = Parsers.ProcessRawList
+    elseif source.parser == "tf2db" then
+        parser = Parsers.ProcessTF2DB
+    else
+        return 0, "Unknown parser type"
+    end
+    
+    -- Step 3: Process the content in batches with accurate progress
+    Tasks.message = "Processing " .. sourceName .. "..."
+    
+    -- First count how many entries we'll be processing
+    local totalEntries = 0
+    local processedEntries = 0
+    
+    if source.parser == "raw" then
+        -- Count lines for raw data
+        for _ in sourceRawData:gmatch("[^\r\n]+") do
+            totalEntries = totalEntries + 1
+        end
+    elseif source.parser == "tf2db" then
+        -- Try to parse JSON to get count
+        local jsonSuccess, jsonData = pcall(Json.decode, sourceRawData)
+        if jsonSuccess and jsonData and jsonData.players then
+            totalEntries = #jsonData.players
+        else
+            -- Estimate based on content length
+            totalEntries = math.floor(#sourceRawData / 100) -- Rough estimate
+        end
+    end
+    
+    -- Process with the selected parser
+    local batchSize = 500
+    local result = 0
+    
+    if parser == Parsers.ProcessRawList then
+        -- Process raw list manually in batches
+        local lines = {}
+        for line in sourceRawData:gmatch("[^\r\n]+") do
+            table.insert(lines, line)
+        end
+        
+        local batches = math.ceil(#lines / batchSize)
+        
+        for i = 1, batches do
+            local startIdx = (i-1) * batchSize + 1
+            local endIdx = math.min(i * batchSize, #lines)
+            local batchLines = {}
+            
+            -- Extract this batch of lines
+            for j = startIdx, endIdx do
+                table.insert(batchLines, lines[j])
+            end
+            
+            -- Process this batch
+            local batchContent = table.concat(batchLines, "\n")
+            local batchResult = parser(batchContent, database, sourceName, source.cause) 
+            result = result + batchResult
+            
+            -- Update progress
+            processedEntries = endIdx
+            local progressPct = math.floor((processedEntries / totalEntries) * 100)
+            Tasks.message = string.format("Processing %s: %d%% (%d entries added)",
+                sourceName, progressPct, result)
+                
+            -- Let UI update
+            coroutine.yield()
+        end
+    else
+        -- Use the parser directly
+        result = parser(sourceRawData, database, source)
+    end
+    
+    -- Clear data to save memory
+    sourceRawData = nil
+    collectgarbage("collect")
+    
+    return result
+end
+
 -- Main fetch function with improved anti-ban protection and progress tracking
 function Fetcher.FetchAll(database, callback, silent)
     -- If already running, don't start again
@@ -76,7 +190,7 @@ function Fetcher.FetchAll(database, callback, silent)
         return false
     end
     
-    -- Initialize UI tracking
+    -- Initialize UI tracking with batch precision
     Fetcher.UI.totalSources = #Fetcher.Sources
     Fetcher.UI.completedSources = 0
     Fetcher.UI.currentProgress = 0
@@ -119,21 +233,22 @@ function Fetcher.FetchAll(database, callback, silent)
                 end
             end
             
-            -- Now fetch the actual source
+            -- Now fetch the actual source with proper batch processing
             Tasks.message = "Fetching from " .. source.name
             local count = 0
             
-            -- Try to fetch with error handling
+            -- Use the batch processor for better progress tracking
             local success, result = pcall(function()
-                return Parsers.ProcessSource(source, database)
+                return Fetcher.ProcessSourceInBatches(source, database)
             end)
             
-            if success then
+            if success and type(result) == "number" then
                 count = result
                 totalAdded = totalAdded + count
                 Tasks.message = string.format("Added %d entries from %s", count, source.name)
             else
-                print("[Database Fetcher] Error processing " .. source.name .. ": " .. tostring(result))
+                local errorMsg = type(result) == "string" and result or "unknown error"
+                print("[Database Fetcher] Error processing " .. source.name .. ": " .. errorMsg)
                 Tasks.message = "Error processing " .. source.name
             end
             

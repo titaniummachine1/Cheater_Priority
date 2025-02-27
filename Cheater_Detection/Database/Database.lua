@@ -87,11 +87,16 @@ function Database.GetFilePath()
         "."
     }
 
-    -- Try to access or create folders
+    -- Try to find existing folder first
     for _, folder in ipairs(possibleFolders) do
-        local success = pcall(filesystem.CreateDirectory, folder)
-        if success then
-            -- Directory exists or was created successfully
+        if pcall(function() return filesystem.GetFileSize(folder) end) then
+            return folder .. "/database.json"
+        end
+    end
+
+    -- Try to create folders
+    for _, folder in ipairs(possibleFolders) do
+        if pcall(filesystem.CreateDirectory, folder) then
             return folder .. "/database.json"
         end
     end
@@ -100,31 +105,189 @@ function Database.GetFilePath()
     return "./database.json"
 end
 
--- Save database to disk
+-- Save database to disk with batch writing and progress tracking
 function Database.SaveDatabase()
-    local filePath = Database.GetFilePath()
+    -- Create a save task to run in coroutine
+    local saveTask = coroutine.create(function()
+        local filePath = Database.GetFilePath()
+        local tempPath = filePath .. ".tmp"
+        local backupPath = filePath .. ".bak"
+        
+        -- Let UI know we're starting
+        if G and G.UI and G.UI.ShowMessage then
+            G.UI.ShowMessage("Saving database...")
+        end
+        
+        -- Stage 1: Create a temporary file
+        local tempFile = io.open(tempPath, "w")
+        if not tempFile then
+            print("[Database] Failed to create temporary file: " .. tempPath)
+            return false
+        end
+        
+        -- Write opening JSON bracket
+        tempFile:write("{\n")
+        
+        -- Stage 2: Process entries in batches
+        local entries = {}
+        for steamID, entry in pairs(Database.data) do
+            table.insert(entries, {id = steamID, data = entry})
+        end
+        
+        local totalEntries = #entries
+        local batchSize = 500 -- Process 500 entries at a time
+        local batches = math.ceil(totalEntries / batchSize)
+        
+        for batchIndex = 1, batches do
+            local startIdx = (batchIndex - 1) * batchSize + 1
+            local endIdx = math.min(batchIndex * batchSize, totalEntries)
+            
+            -- Update progress
+            local progress = math.floor((batchIndex - 1) / batches * 100)
+            if G and G.UI and G.UI.UpdateProgress then
+                G.UI.UpdateProgress(progress, "Saving database... " .. progress .. "%")
+            end
+            
+            -- Allow UI to update
+            coroutine.yield()
+            
+            -- Process this batch
+            for i = startIdx, endIdx do
+                local entry = entries[i]
+                if entry and entry.id then
+                    local steamID = entry.id
+                    local data = entry.data
+                    
+                    -- Serialize this entry
+                    local jsonEntry = string.format('"%s":{"Name":"%s","proof":"%s"}', 
+                        steamID,
+                        (data.Name or "Unknown"):gsub('"', '\\"'),
+                        (data.proof or "Unknown"):gsub('"', '\\"')
+                    )
+                    
+                    -- Add comma for all except the last entry
+                    if i < totalEntries then
+                        jsonEntry = jsonEntry .. ",\n"
+                    else
+                        jsonEntry = jsonEntry .. "\n"
+                    end
+                    
+                    -- Write to file
+                    tempFile:write(jsonEntry)
+                end
+            end
+            
+            -- Force flush the batch
+            tempFile:flush()
+            
+            -- Clean up memory after each batch
+            collectgarbage("step", 100)
+        end
+        
+        -- Write closing JSON bracket
+        tempFile:write("}")
+        tempFile:close()
+        
+        -- Stage 3: Backup current file if it exists
+        local currentFile = io.open(filePath, "r")
+        if currentFile then
+            local content = currentFile:read("*a")
+            currentFile:close()
+            
+            local backupFile = io.open(backupPath, "w")
+            if backupFile then
+                backupFile:write(content)
+                backupFile:close()
+            end
+        end
+        
+        -- Stage 4: Rename temporary file to actual file
+        local success = os.rename(tempPath, filePath)
+        
+        -- Update state
+        Database.State.isDirty = false
+        Database.State.lastSave = os.time()
+        
+        if G and G.UI and G.UI.ShowMessage then
+            G.UI.ShowMessage("Database saved with " .. Database.State.entriesCount .. " entries!")
+        end
+        
+        if Database.Config.DebugMode then
+            print(string.format("[Database] Saved %d entries to %s", 
+                Database.State.entriesCount, filePath))
+        end
+        
+        return success
+    end)
+    
+    -- Run the save coroutine
+    local saveCallback = function()
+        -- Only proceed if the coroutine is alive
+        if coroutine.status(saveTask) ~= "dead" then
+            local success, result = pcall(coroutine.resume, saveTask)
+            
+            if not success then
+                -- Error occurred
+                print("[Database] Save error: " .. tostring(result))
+                callbacks.Unregister("Draw", "DatabaseSave")
+                
+                -- Try fallback save method
+                Database.FallbackSave()
+            end
+        else
+            -- Save completed
+            callbacks.Unregister("Draw", "DatabaseSave")
+        end
+    end
+    
+    -- Register the callback to run on Draw
+    callbacks.Register("Draw", "DatabaseSave", saveCallback)
+    return true
+end
 
-    -- Open file for writing
-    local file = io.open(filePath, "w")
-    if not file then
-        print("[Database] Failed to open file for writing: " .. filePath)
+-- Fallback save method that uses simpler approach for reliability
+function Database.FallbackSave()
+    print("[Database] Using fallback save method")
+    
+    local filePath = Database.GetFilePath()
+    local success = pcall(function()
+        -- Open file
+        local file = io.open(filePath, "w")
+        if not file then
+            error("Failed to open file for writing")
+        end
+        
+        -- Build a simpler JSON structure
+        file:write("{\n")
+        
+        local count = 0
+        local total = 0
+        for steamID in pairs(Database.data) do total = total + 1 end
+        
+        for steamID, entry in pairs(Database.data) do
+            count = count + 1
+            local data = string.format('"%s":{"Name":"%s","proof":"%s"}%s\n',
+                steamID,
+                (entry.Name or "Unknown"):gsub('"', '\\"'),
+                (entry.proof or "Unknown"):gsub('"', '\\"'),
+                count < total and "," or ""
+            )
+            file:write(data)
+        end
+        
+        file:write("}")
+        file:close()
+    end)
+    
+    if success then
+        print("[Database] Fallback save successful")
+        Database.State.isDirty = false
+        Database.State.lastSave = os.time()
+        return true
+    else
+        print("[Database] Fallback save failed")
         return false
     end
-
-    -- Write the data
-    local jsonData = Json.encode(Database.data)
-    file:write(jsonData)
-    file:close()
-
-    -- Update state
-    Database.State.isDirty = false
-    Database.State.lastSave = os.time()
-
-    if Database.Config.DebugMode then
-        print(string.format("[Database] Saved %d entries to %s", Database.State.entriesCount, filePath))
-    end
-
-    return true
 end
 
 -- Load database from disk
