@@ -4,13 +4,6 @@ local Sources = {}
 
 -- List of available sources
 Sources.List = {
-	-- High-priority sources first (smaller and more reliable)
-	{
-		name = "TF2BD Bots",
-		url = "https://raw.githubusercontent.com/wgetJane/tf2-catkill/master/bots.txt",
-		cause = "Bot",
-		parser = "raw", -- Raw parser is safer
-	},
 	{
 		name = "d3fc0n6 Cheater List",
 		url = "https://raw.githubusercontent.com/d3fc0n6/CheaterList/main/CheaterFriend/64ids",
@@ -29,6 +22,12 @@ Sources.List = {
 		url = "https://raw.githubusercontent.com/PazerOP/tf2_bot_detector/master/staging/cfg/playerlist.official.json",
 		cause = "Bot",
 		parser = "tf2db", -- Use tf2db parser but with enhanced safety
+	},
+	{
+		name = "TF2BD Bots",
+		url = "https://raw.githubusercontent.com/wgetJane/tf2-catkill/master/bots.txt",
+		cause = "Bot",
+		parser = "tf2db", -- Raw parser is safer
 	},
 }
 

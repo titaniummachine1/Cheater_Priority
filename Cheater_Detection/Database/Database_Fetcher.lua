@@ -19,7 +19,7 @@ local Fetcher = {
 	Tasks = Tasks,
 }
 
--- Simple direct update from a source
+-- Improved direct update with better coroutine yielding
 function Fetcher.DirectUpdate(source, database)
 	if not source or not source.url or not database then
 		return 0
@@ -29,8 +29,26 @@ function Fetcher.DirectUpdate(source, database)
 	local sourceName = source.name or "Unknown Source"
 	Tasks.message = "Downloading from " .. sourceName
 
-	-- Download content
-	local content = http.Get(source.url)
+	-- Always yield after updating UI message
+	coroutine.yield()
+
+	-- Download content in a non-blocking way
+	local downloadTask = coroutine.create(function()
+		return http.Get(source.url)
+	end)
+
+	-- Process the download
+	local content
+	while coroutine.status(downloadTask) ~= "dead" do
+		local success, result = coroutine.resume(downloadTask)
+
+		if success and result then
+			content = result
+		end
+
+		-- Always yield to keep game responsive
+		coroutine.yield()
+	end
 
 	-- Check for failed download
 	if not content or #content == 0 then
@@ -43,6 +61,7 @@ function Fetcher.DirectUpdate(source, database)
 
 	-- Process based on parser type
 	local count = 0
+	local processed = 0
 
 	if source.parser == "raw" then
 		-- Process plain text list
@@ -70,8 +89,11 @@ function Fetcher.DirectUpdate(source, database)
 				end
 			end
 
-			-- Yield occasionally to keep the game responsive
-			if count % 500 == 0 then
+			processed = processed + 1
+
+			-- Yield frequently to keep the game responsive
+			if processed % 250 == 0 then
+				Tasks.message = string.format("Processing %s: %d added", sourceName, count)
 				coroutine.yield()
 			end
 		end
@@ -104,7 +126,11 @@ function Fetcher.DirectUpdate(source, database)
 				end
 			end
 
-			if count % 500 == 0 then
+			processed = processed + 1
+
+			-- Yield frequently
+			if processed % 250 == 0 then
+				Tasks.message = string.format("Processing %s: %d added", sourceName, count)
 				coroutine.yield()
 			end
 		end

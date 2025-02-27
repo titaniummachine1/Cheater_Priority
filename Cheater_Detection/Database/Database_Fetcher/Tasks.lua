@@ -1,4 +1,7 @@
--- Minimal task system that just works
+--[[
+    Fixed Task UI System - Ensures proper display of loading elements
+]]
+
 local Tasks = {
 	isRunning = false,
 	progress = 0,
@@ -9,18 +12,43 @@ local Tasks = {
 	completedSources = 0,
 	totalSources = 0,
 	completedTime = 0,
-	Config = {
-		SmoothFactor = 0.1, -- Higher = faster progress bar
-		SimplifiedUI = true,
+
+	-- UI configuration with adjusted dimensions
+	UI = {
+		Width = 300, -- Width of UI window
+		Height = 90, -- Increased height to prevent text overlap
+		BarHeight = 20, -- Height of progress bar
+		Padding = 10, -- Padding inside window
+		TitleSize = 18, -- Size of title font
+		TextSize = 14, -- Size of regular text font
+		BackgroundAlpha = 200, -- Background opacity (0-255)
+		BorderAlpha = 150, -- Border opacity (0-255)
+		ScreenOffset = 120, -- Distance from bottom of screen
+
+		-- New positioning properties for better layout
+		TitleOffset = 8, -- Title position from top
+		StatusOffset = 35, -- Status message position from top
+		BarBottomOffset = 15, -- Progress bar position from bottom
+		TextSpacing = 8, -- Space between text elements
+	},
+
+	-- Animation settings
+	Animation = {
+		SmoothFactor = 0.1, -- Progress bar smoothing (higher = faster)
+		FadeDelay = 3, -- Seconds before fading out after completion
+		FadeDuration = 1, -- Seconds for fade out animation
 	},
 }
 
--- Initialize fonts
-local titleFont = draw.CreateFont("Verdana", 16, 800)
-local textFont = draw.CreateFont("Verdana", 12, 400)
+-- Initialize fonts - explicitly create each time instead of storing
+function Tasks.InitializeFonts()
+	Tasks.titleFont = draw.CreateFont("Verdana", Tasks.UI.TitleSize, 800) -- Bold font
+	Tasks.textFont = draw.CreateFont("Verdana", Tasks.UI.TextSize, 400) -- Regular font
+end
 
 -- Initialize task tracking
 function Tasks.Init(sourceCount)
+	-- Initialize task state
 	Tasks.totalSources = sourceCount or 0
 	Tasks.completedSources = 0
 	Tasks.progress = 0
@@ -30,6 +58,9 @@ function Tasks.Init(sourceCount)
 	Tasks.message = "Loading Database"
 	Tasks.currentSource = nil
 	Tasks.completedTime = 0
+
+	-- Make sure fonts are initialized
+	Tasks.InitializeFonts()
 end
 
 -- Reset task system
@@ -50,6 +81,7 @@ function Tasks.Reset()
 	Tasks.totalSources = 0
 	Tasks.completedTime = 0
 
+	-- Force GC
 	collectgarbage("collect")
 end
 
@@ -70,9 +102,14 @@ end
 
 -- Update progress with smoothing
 function Tasks.UpdateProgress()
+	-- Only update if running
+	if not Tasks.isRunning then
+		return
+	end
+
 	-- Smooth progress bar
 	if Tasks.progress ~= Tasks.targetProgress then
-		Tasks.progress = Tasks.progress + (Tasks.targetProgress - Tasks.progress) * Tasks.Config.SmoothFactor
+		Tasks.progress = Tasks.progress + (Tasks.targetProgress - Tasks.progress) * Tasks.Animation.SmoothFactor
 		if math.abs(Tasks.progress - Tasks.targetProgress) < 0.5 then
 			Tasks.progress = Tasks.targetProgress
 		end
@@ -80,71 +117,92 @@ function Tasks.UpdateProgress()
 
 	-- Handle completion fade-out
 	if Tasks.status == "complete" and Tasks.completedTime > 0 then
-		if globals.RealTime() - Tasks.completedTime > 3 then
+		if globals.RealTime() - Tasks.completedTime > Tasks.Animation.FadeDelay then
 			Tasks.Reset()
 		end
 	end
 end
 
--- Draw simple UI
+-- Draw improved UI with fixed layout
 function Tasks.DrawProgressUI()
+	-- Skip if not running
 	if not Tasks.isRunning then
 		return
 	end
 
-	-- Update progress smoothly
-	Tasks.UpdateProgress()
+	-- Make sure fonts are initialized
+	Tasks.InitializeFonts()
 
 	-- Get screen dimensions
 	local screenWidth, screenHeight = draw.GetScreenSize()
 
-	-- Set up window dimensions
-	local width = 260
-	local height = 60
-	local x = (screenWidth - width) / 2
-	local y = screenHeight - height - 100
+	-- Calculate window position (centered horizontally, fixed distance from bottom)
+	local width = Tasks.UI.Width
+	local height = Tasks.UI.Height
+	local x = math.floor((screenWidth - width) / 2)
+	local y = math.floor(screenHeight - height - Tasks.UI.ScreenOffset)
 
-	-- Draw background and border
-	draw.Color(20, 20, 20, 200)
+	-- Draw background with alpha
+	draw.Color(20, 20, 20, Tasks.UI.BackgroundAlpha)
 	draw.FilledRect(x, y, x + width, y + height)
-	draw.Color(60, 120, 255, 150)
+
+	-- Draw border
+	draw.Color(60, 120, 255, Tasks.UI.BorderAlpha)
 	draw.OutlinedRect(x, y, x + width, y + height)
 
-	-- Draw title
-	draw.SetFont(titleFont)
+	-- Draw title - moved up to prevent overlap
+	draw.SetFont(Tasks.titleFont)
 	draw.Color(255, 255, 255, 255)
 	local titleText = "Database Update"
 	local titleWidth = draw.GetTextSize(titleText)
-	draw.Text(x + (width - titleWidth) / 2, y + 5, titleText)
+	draw.Text(x + math.floor((width - titleWidth) / 2), y + Tasks.UI.TitleOffset, titleText)
+
+	-- Calculate progress bar position from bottom of window
+	local barPadding = Tasks.UI.Padding
+	local barWidth = width - (barPadding * 2)
+	local barHeight = Tasks.UI.BarHeight
+	local barY = y + height - barHeight - Tasks.UI.BarBottomOffset
 
 	-- Draw progress bar background
-	local barY = y + 30
-	local barHeight = 20
 	draw.Color(40, 40, 40, 180)
-	draw.FilledRect(x + 10, barY, x + width - 10, barY + barHeight)
+	draw.FilledRect(x + barPadding, barY, x + barPadding + barWidth, barY + barHeight)
 
-	-- Draw progress bar
-	local fillWidth = ((width - 20) * Tasks.progress) / 100
+	-- Draw progress bar fill
+	local fillWidth = math.floor((barWidth * Tasks.progress) / 100)
 	draw.Color(30, 120, 255, 255)
-	draw.FilledRect(x + 10, barY, x + 10 + fillWidth, barY + barHeight)
+	draw.FilledRect(x + barPadding, barY, x + barPadding + fillWidth, barY + barHeight)
 
-	-- Draw progress percentage
-	draw.SetFont(textFont)
+	-- Draw progress percentage text
+	draw.SetFont(Tasks.textFont)
 	draw.Color(255, 255, 255, 255)
 	local percent = string.format("%d%%", math.floor(Tasks.progress))
 	local percentWidth = draw.GetTextSize(percent)
-	draw.Text(x + (width - percentWidth) / 2, barY + (barHeight - 12) / 2, percent)
+	draw.Text(
+		x + barPadding + math.floor((barWidth - percentWidth) / 2),
+		barY + math.floor((barHeight - Tasks.UI.TextSize) / 2),
+		percent
+	)
 
-	-- Draw message
-	local message = Tasks.message
-	if #message > 30 then
-		message = message:sub(1, 27) .. "..."
+	-- Draw status message (if any) with proper positioning
+	if Tasks.message and Tasks.message ~= "" then
+		local message = Tasks.message
+		if #message > 40 then
+			message = message:sub(1, 37) .. "..."
+		end
+
+		draw.SetFont(Tasks.textFont)
+		local messageWidth = draw.GetTextSize(message)
+		-- Position message between title and progress bar
+		draw.Text(
+			x + math.floor((width - messageWidth) / 2),
+			y + Tasks.UI.StatusOffset, -- Positioned right below the title
+			message
+		)
 	end
-	local messageWidth = draw.GetTextSize(message)
-	draw.Text(x + (width - messageWidth) / 2, y + height - 20, message)
 end
 
--- Register automatic progress update
+-- Register automatic progress update (only once)
+callbacks.Unregister("Draw", "TasksUpdateProgress")
 callbacks.Register("Draw", "TasksUpdateProgress", Tasks.UpdateProgress)
 
 return Tasks
