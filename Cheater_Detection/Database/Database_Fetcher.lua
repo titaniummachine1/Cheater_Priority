@@ -14,10 +14,66 @@ if not Json then
 	print("[Database Fetcher] Warning: JSON library not available in Common, some features may not work")
 end
 
--- Load components
-local Tasks = require("Cheater_Detection.Database.Database_Fetcher.Tasks")
-local Sources = require("Cheater_Detection.Database.Database_Fetcher.Sources")
-local Parsers = require("Cheater_Detection.Database.Database_Fetcher.Parsers")
+-- Improve module loading with better error handling
+local Tasks, Sources, Parsers
+local loadSuccess = true
+
+-- Try to load each module with detailed error reporting
+local function tryRequire(name, path)
+	print("[Database Fetcher] Loading module: " .. path)
+	local success, module = pcall(function()
+		return require(path)
+	end)
+
+	if not success then
+		print("[Database Fetcher] ERROR: Failed to load " .. name .. " module: " .. tostring(module))
+		loadSuccess = false
+		return {}
+	end
+
+	print("[Database Fetcher] Successfully loaded: " .. name)
+	return module
+end
+
+-- Load modules with more robust error handling
+Tasks = tryRequire("Tasks", "Cheater_Detection.Database.Database_Fetcher.Tasks")
+Sources = tryRequire("Sources", "Cheater_Detection.Database.Database_Fetcher.Sources")
+
+-- Try to load Parsers with fallback to our FallbackParsers
+local parsersPath = "Cheater_Detection.Database.Database_Fetcher.Parsers"
+Parsers = tryRequire("Parsers", parsersPath)
+
+-- Create minimal Parsers interface if loading failed
+if not Parsers or not Parsers.Download then
+	print("[Database Fetcher] WARNING: Creating minimal Parsers interface")
+
+	Parsers = {
+		-- Simple Download function that doesn't depend on any modules
+		Download = function(url)
+			print("[Minimal Parsers] Downloading: " .. url)
+			return http.Get(url)
+		end,
+
+		-- Simple processing functions that track what they're called with
+		ProcessRawList = function(content, database, sourceName, sourceCause)
+			print("[Minimal Parsers] Processing raw list: " .. sourceName)
+			return 0
+		end,
+
+		ProcessTF2DB = function(content, database, source)
+			print("[Minimal Parsers] Processing TF2DB: " .. source.name)
+			return 0
+		end,
+
+		ProcessSource = function(source, database)
+			print("[Minimal Parsers] Processing source: " .. source.name)
+			return 0
+		end,
+	}
+end
+
+-- Make sure we create a global reference that won't be garbage collected
+_G.CD_Parsers = Parsers
 
 -- Create fetcher object with improved configuration
 local Fetcher = {
@@ -167,9 +223,32 @@ function Fetcher.ProcessSourceInBatches(source, database)
 	-- Step 1: Download the content without blocking main thread
 	Tasks.message = "Downloading from " .. sourceName .. "..."
 
-	-- Create a dedicated coroutine for downloading
+	-- Create a dedicated coroutine for downloading with robust error handling
 	local downloadCoroutine = coroutine.create(function()
-		local sourceRawData = Parsers.Download(sourceUrl)
+		-- Create local copies of all needed functions to avoid upvalue issues
+		local localDownload = _G.CD_Parsers.Download
+		local localProcessRawList = _G.CD_Parsers.ProcessRawList
+		local localProcessTF2DB = _G.CD_Parsers.ProcessTF2DB
+
+		-- Safety check for our functions
+		if not localDownload or type(localDownload) ~= "function" then
+			print("[Fetcher] CRITICAL ERROR: Download function not available!")
+			return 0, "Download function not available"
+		end
+
+		-- Safe download with detailed error handling
+		local sourceRawData
+		local success, result = pcall(function()
+			print("[Fetcher] Downloading from " .. sourceUrl)
+			return localDownload(sourceUrl)
+		end)
+
+		if not success then
+			print("[Fetcher] Download error: " .. tostring(result))
+			return 0, "Download error: " .. tostring(result)
+		end
+
+		sourceRawData = result
 
 		-- If download failed, try a backup URL if available
 		if not sourceRawData or #sourceRawData == 0 then
@@ -204,11 +283,21 @@ function Fetcher.ProcessSourceInBatches(source, database)
 
 		-- Use incremental processing based on parser type
 		if source.parser == "raw" then
-			result = Parsers.ProcessRawList(sourceRawData, database, sourceName, source.cause)
+			print("[Fetcher] Processing as raw list: " .. sourceName)
+			if localProcessRawList and type(localProcessRawList) == "function" then
+				result = localProcessRawList(sourceRawData, database, sourceName, source.cause)
+			else
+				print("[Fetcher] ERROR: ProcessRawList function not available!")
+			end
 		elseif source.parser == "tf2db" then
-			result = Parsers.ProcessTF2DB(sourceRawData, database, source)
+			print("[Fetcher] Processing as TF2DB: " .. sourceName)
+			if localProcessTF2DB and type(localProcessTF2DB) == "function" then
+				result = localProcessTF2DB(sourceRawData, database, source)
+			else
+				print("[Fetcher] ERROR: ProcessTF2DB function not available!")
+			end
 		else
-			return 0, "Unknown parser type"
+			return 0, "Unknown parser type: " .. tostring(source.parser)
 		end
 
 		-- Clear data and force memory cleanup
