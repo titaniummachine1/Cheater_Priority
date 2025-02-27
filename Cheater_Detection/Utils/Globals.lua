@@ -7,7 +7,7 @@ Globals.AutoVote = {
 	VoteValue = nil, -- Set this to 1 for yes, 2 for no, or nil for off
 }
 
---[[Shared Varaibles]]
+--[[Shared Variables]]
 
 Globals.players = {}
 Globals.pLocal = nil
@@ -35,6 +35,21 @@ local G = {
 		LastMemoryCheck = 0,
 		MemoryCheckInterval = 5.0, -- Check memory every 5 seconds
 	},
+
+	-- Helper function for reliable integer coordinates
+	RoundCoord = function(value)
+		if not value then
+			return 0
+		end
+		if type(value) ~= "number" then
+			return 0
+		end
+		-- Check for NaN and infinity
+		if value ~= value or value == math.huge or value == -math.huge then
+			return 0
+		end
+		return math.floor(value + 0.5)
+	end,
 }
 
 -- UI helper functions
@@ -80,23 +95,23 @@ G.UI = {
 			alpha = math.floor(255 * (G.Config.NotificationDuration - timeSinceNotification) / 0.5)
 		end
 
-		-- Draw notification
-		local x, y = 20, 100
+		-- Draw notification with integer coordinates
+		local x, y = G.RoundCoord(20), G.RoundCoord(100)
 		local padding = 10
 		local message = G.State.NotificationMessage
 		local width = draw.GetTextSize(message) + padding * 2
 
 		-- Background
 		draw.Color(20, 20, 20, math.min(200, alpha))
-		draw.FilledRect(x, y, x + width, y + 30)
+		draw.FilledRect(x, y, x + width, y + G.RoundCoord(30))
 
 		-- Border
 		draw.Color(80, 150, 255, alpha)
-		draw.OutlinedRect(x, y, x + width, y + 30)
+		draw.OutlinedRect(x, y, x + width, y + G.RoundCoord(30))
 
 		-- Text
 		draw.Color(255, 255, 255, alpha)
-		draw.Text(x + padding, y + padding, message)
+		draw.Text(G.RoundCoord(x + padding), G.RoundCoord(y + padding), message)
 	end,
 
 	-- Draw progress bar if active
@@ -105,18 +120,19 @@ G.UI = {
 			return
 		end
 
-		-- Draw progress bar at bottom of screen
+		-- Draw progress bar at bottom of screen with integer coordinates
 		local width = 300
 		local height = 20
-		local x = (draw.GetScreenSize() - width) / 2
-		local y = draw.GetScreenSize() - height - 20
+		local screenWidth, screenHeight = draw.GetScreenSize()
+		local x = G.RoundCoord((screenWidth - width) / 2)
+		local y = G.RoundCoord(screenHeight - height - 20)
 
 		-- Background
 		draw.Color(20, 20, 20, 200)
 		draw.FilledRect(x, y, x + width, y + height)
 
 		-- Progress fill
-		local progressWidth = math.floor(width * (G.State.ProgressValue / 100))
+		local progressWidth = G.RoundCoord(width * (G.State.ProgressValue / 100))
 		draw.Color(80, 150, 255, 255)
 		draw.FilledRect(x, y, x + progressWidth, y + height)
 
@@ -128,11 +144,11 @@ G.UI = {
 		local percent = tostring(math.floor(G.State.ProgressValue)) .. "%"
 		local textWidth = draw.GetTextSize(percent)
 		draw.Color(255, 255, 255, 255)
-		draw.Text(x + (width - textWidth) / 2, y + 3, percent)
+		draw.Text(G.RoundCoord(x + (width - textWidth) / 2), G.RoundCoord(y + 3), percent)
 
 		-- Message text
 		if G.State.ProgressMessage and #G.State.ProgressMessage > 0 then
-			draw.Text(x, y - 15, G.State.ProgressMessage)
+			draw.Text(x, G.RoundCoord(y - 15), G.State.ProgressMessage)
 		end
 	end,
 }
