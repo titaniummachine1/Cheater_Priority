@@ -1,0 +1,10 @@
+{
+    "editor.formatOnSave": true,
+    "[lua]": {
+      "editor.defaultFormatter": "JohnnyMorganz.stylua", 
+      // Or if using LuaFormat: "editor.defaultFormatter": "koihik.vscode-lua-format",
+      "editor.formatOnSave": true
+    },
+    "stylua.targetLuaVersion": "5.4",
+    "stylua.searchParentDirectories": true
+  }
