@@ -30,7 +30,7 @@ Sources.List = {
         cause = "Tacobot",
         parser = "raw"
     },
-    {
+    --[[{ --commented out to see if its the culprit of crash
         name = "Sleepy List - Bots",
         url = "https://raw.githubusercontent.com/surepy/tf2db-sleepy-list/main/playerlist.sleepy-bots.merged.json",
         cause = "Bot",
@@ -41,7 +41,7 @@ Sources.List = {
         url = "https://raw.githubusercontent.com/surepy/tf2db-sleepy-list/main/playerlist.rgl-gg.json",
         cause = "RGL Banned",
         parser = "tf2db"
-    }
+    }]]
 }
 
 -- Function to add a custom source
