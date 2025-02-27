@@ -1155,19 +1155,19 @@ local function InitializeDatabase()
 	end)
 end
 
--- Force database initialization for safe access
+-- Make sure structures exist
 function Database.EnsureInitialized()
-	-- Make sure the data structure exists
+	-- Create data table if needed
 	Database.data = Database.data or {}
 
-	-- Create the state table if it doesn't exist
+	-- Create state tracking
 	Database.State = Database.State or {
 		entriesCount = 0,
 		isDirty = false,
 		lastSave = 0,
 	}
 
-	-- Create the content accessor if it doesn't exist
+	-- Create content accessor
 	if not Database.content then
 		Database.content = setmetatable({}, {
 			__index = function(_, key)
@@ -1182,17 +1182,125 @@ function Database.EnsureInitialized()
 		})
 	end
 
-	-- Update entry count if needed
-	if Database.State.entriesCount <= 0 then
-		local count = 0
-		for _ in pairs(Database.data) do
-			count = count + 1
-		end
-		Database.State.entriesCount = count
+	return true
+end
+
+-- Simplified update function that just adds new entries
+function Database.DirectUpdate(source, sourceName, sourceCause)
+	if type(source) ~= "table" then
+		return 0
 	end
+
+	local added = 0
+	for steamId, data in pairs(source) do
+		-- Only process valid Steam IDs
+		if type(steamId) == "string" and #steamId >= 15 and steamId:match("^%d+$") then
+			-- Add if doesn't exist
+			if not Database.data[steamId] then
+				Database.data[steamId] = {
+					Name = (type(data) == "table" and data.Name) or "Unknown",
+					proof = (type(data) == "table" and (data.proof or data.cause)) or sourceCause or "Unknown",
+				}
+
+				-- Update state
+				Database.State.entriesCount = Database.State.entriesCount + 1
+				Database.State.isDirty = true
+
+				-- Set priority
+				pcall(function()
+					playerlist.SetPriority(steamId, 10)
+				end)
+
+				added = added + 1
+			end
+		end
+
+		-- Yield periodically to avoid freezing
+		if added % 500 == 0 then
+			coroutine.yield()
+		end
+	end
+
+	return added
+end
+
+-- Save database with simpler approach
+function Database.QuickSave()
+	-- Create a save task in a coroutine
+	local saveTask = coroutine.create(function()
+		-- Open file
+		local filePath = Database.GetFilePath()
+		local file = io.open(filePath, "w")
+		if not file then
+			print("[Database] Failed to open file for writing: " .. filePath)
+			return false
+		end
+
+		-- Write opening bracket
+		file:write("{\n")
+
+		-- Get all IDs
+		local ids = {}
+		for id in pairs(Database.data) do
+			table.insert(ids, id)
+		end
+
+		-- Write each entry
+		local totalEntries = #ids
+		for i, id in ipairs(ids) do
+			local entry = Database.data[id]
+
+			-- Get and sanitize data
+			local name = entry.Name or "Unknown"
+			local proof = entry.proof or "Unknown"
+			name = name:gsub('"', '\\"'):gsub("[\r\n\t]", " ")
+			proof = proof:gsub('"', '\\"'):gsub("[\r\n\t]", " ")
+
+			-- Write JSON entry
+			local line = string.format('"%s":{"Name":"%s","proof":"%s"}', id, name, proof)
+			if i < totalEntries then
+				line = line .. ","
+			end
+			line = line .. "\n"
+			file:write(line)
+
+			-- Yield periodically
+			if i % 200 == 0 then
+				coroutine.yield()
+			end
+		end
+
+		-- Write closing bracket
+		file:write("}")
+		file:close()
+
+		-- Update state
+		Database.State.isDirty = false
+		Database.State.lastSave = os.time()
+
+		print("[Database] Saved " .. totalEntries .. " entries to " .. filePath)
+		return true
+	end)
+
+	-- Run the save coroutine
+	callbacks.Register("Draw", "DatabaseQuickSave", function()
+		if coroutine.status(saveTask) ~= "dead" then
+			local success, result = pcall(coroutine.resume, saveTask)
+			if not success then
+				print("[Database] Save error: " .. tostring(result))
+				callbacks.Unregister("Draw", "DatabaseQuickSave")
+			end
+		else
+			callbacks.Unregister("Draw", "DatabaseQuickSave")
+		end
+	end)
 
 	return true
 end
+
+-- Replace existing functions with simplified versions
+Database.SaveDatabase = Database.QuickSave
+Database.ValidateDatabase = Database.DirectUpdate
 
 InitializeDatabase() -- Initialize the database when this module is loaded
 RegisterCommands() -- Register commands
