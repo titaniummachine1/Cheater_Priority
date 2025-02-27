@@ -7,7 +7,12 @@
 -- Import required modules
 local Common = require("Cheater_Detection.Utils.Common")
 local Commands = Common.Lib.Utils.Commands
+
+-- Get JSON from Common, don't try to import a non-existent module
 local Json = Common.Json
+if not Json then
+    print("[Database Fetcher] Warning: JSON library not available in Common, some features may not work")
+end
 
 -- Load components
 local Tasks = require("Cheater_Detection.Database.Database_Fetcher.Tasks")
@@ -37,20 +42,94 @@ local Fetcher = {
         LastAutoFetch = 0,             -- Timestamp of last auto-fetch
         
         -- Debug settings
-        DebugMode = false              -- Enable debug output
+        DebugMode = false,             -- Enable debug output
+        
+        -- Memory management settings
+        MaxMemoryMB = 100,             -- Target maximum memory usage (MB)
+        ForceGCThreshold = 50,         -- Force GC when memory exceeds this % of max
+        UseWeakTables = true,          -- Use weak references for temp data
+        StringBuffering = true,        -- Use string processing instead of tables
     }
 }
 
 -- Export components
 Fetcher.Tasks = Tasks
 Fetcher.Sources = Sources.List
+Fetcher.Json = Json  -- Export JSON reference for components that need it
 
--- Add smooth progress variables
-Fetcher.UI = {
+-- Use weak tables for UI tracking with minimal memory usage
+Fetcher.UI = setmetatable({
     targetProgress = 0,
     currentProgress = 0,
     completedSources = 0,
     totalSources = 0
+}, {__mode = "v"})  -- Values are weak references
+
+-- Any temporary storage should use weak tables
+Fetcher.TempStorage = setmetatable({}, {__mode = "kv"})  -- Both keys and values are weak
+
+-- Memory management functions
+Fetcher.Memory = {
+    -- Check and manage memory usage
+    Check = function()
+        local memoryUsageMB = collectgarbage("count") / 1024
+        local maxAllowed = Fetcher.Config.MaxMemoryMB
+        local forceThreshold = maxAllowed * (Fetcher.Config.ForceGCThreshold / 100)
+        
+        -- If over threshold, force cleanup
+        if memoryUsageMB > forceThreshold then
+            collectgarbage("collect")
+            
+            if Fetcher.Config.DebugMode then
+                print(string.format("[Memory] Forced cleanup: %.2f MB -> %.2f MB", 
+                    memoryUsageMB, collectgarbage("count") / 1024))
+            end
+        end
+        
+        return memoryUsageMB
+    end,
+    
+    -- Force full cleanup
+    ForceCleanup = function()
+        local before = collectgarbage("count") / 1024
+        collectgarbage("collect")
+        collectgarbage("collect")
+        
+        if Fetcher.Config.DebugMode then
+            local after = collectgarbage("count") / 1024
+            print(string.format("[Memory] Full cleanup: %.2f MB -> %.2f MB (saved %.2f MB)",
+                before, after, before - after))
+        end
+    end,
+    
+    -- Add emergency cleanup function
+    EmergencyCleanup = function()
+        -- Force immediate garbage collection
+        collectgarbage("collect")
+        collectgarbage("collect")
+        
+        -- Reset any in-progress tasks
+        Tasks.Reset()
+        
+        -- Clear all temporary tables
+        Fetcher.TempStorage = {}
+        Fetcher.UI = setmetatable({
+            targetProgress = 0,
+            currentProgress = 0,
+            completedSources = 0,
+            totalSources = 0
+        }, {__mode = "v"})
+        
+        -- Clear any registered callbacks
+        pcall(function()
+            callbacks.Unregister("Draw", "FetcherMainTask")
+            callbacks.Unregister("Draw", "FetcherCleanup")
+            callbacks.Unregister("Draw", "FetcherSingleSource")
+            callbacks.Unregister("Draw", "FetcherSingleSourceCleanup")
+        end)
+        
+        print("[Database Fetcher] Emergency cleanup performed")
+    end
 }
 
 -- Get a randomized delay between sources
@@ -67,7 +146,7 @@ function Fetcher.GetSourceDelay()
     end
 end
 
--- Improved batch processing system that correctly tracks progress
+-- Improved batch processing with better memory management
 function Fetcher.ProcessSourceInBatches(source, database)
     if not source or not source.url or not database then
         return 0, "Invalid source configuration"
@@ -77,12 +156,14 @@ function Fetcher.ProcessSourceInBatches(source, database)
     local addedCount = 0
     local sourceUrl = source.url
     local sourceName = source.name
-    local sourceRawData = nil
     local errorMessage = nil
     
-    -- Step 1: Download the content
+    -- Check memory before download
+    Fetcher.Memory.Check()
+    
+    -- Step 1: Download the content with minimized memory usage
     Tasks.message = "Downloading from " .. sourceName .. "..."
-    sourceRawData = Parsers.Download(sourceUrl)
+    local sourceRawData = Parsers.Download(sourceUrl)
     
     -- If download failed, try a backup URL if available
     if not sourceRawData or #sourceRawData == 0 then
@@ -98,89 +179,27 @@ function Fetcher.ProcessSourceInBatches(source, database)
         end
     end
     
-    -- Step 2: Determine the parser to use
-    local parser = nil
+    -- Step 2: Process with minimal memory usage
+    Tasks.message = "Processing " .. sourceName .. "..."
+    local result = 0
+    
+    -- Use incremental processing based on parser type
     if source.parser == "raw" then
-        parser = Parsers.ProcessRawList
-    elseif source.parser == "tf2db" then
-        parser = Parsers.ProcessTF2DB
+        result = Parsers.ProcessRawList(sourceRawData, database, sourceName, source.cause)
+    elseif source.parser == "tf2db" then 
+        result = Parsers.ProcessTF2DB(sourceRawData, database, source)
     else
         return 0, "Unknown parser type"
     end
     
-    -- Step 3: Process the content in batches with accurate progress
-    Tasks.message = "Processing " .. sourceName .. "..."
-    
-    -- First count how many entries we'll be processing
-    local totalEntries = 0
-    local processedEntries = 0
-    
-    if source.parser == "raw" then
-        -- Count lines for raw data
-        for _ in sourceRawData:gmatch("[^\r\n]+") do
-            totalEntries = totalEntries + 1
-        end
-    elseif source.parser == "tf2db" then
-        -- Try to parse JSON to get count
-        local jsonSuccess, jsonData = pcall(Json.decode, sourceRawData)
-        if jsonSuccess and jsonData and jsonData.players then
-            totalEntries = #jsonData.players
-        else
-            -- Estimate based on content length
-            totalEntries = math.floor(#sourceRawData / 100) -- Rough estimate
-        end
-    end
-    
-    -- Process with the selected parser
-    local batchSize = 500
-    local result = 0
-    
-    if parser == Parsers.ProcessRawList then
-        -- Process raw list manually in batches
-        local lines = {}
-        for line in sourceRawData:gmatch("[^\r\n]+") do
-            table.insert(lines, line)
-        end
-        
-        local batches = math.ceil(#lines / batchSize)
-        
-        for i = 1, batches do
-            local startIdx = (i-1) * batchSize + 1
-            local endIdx = math.min(i * batchSize, #lines)
-            local batchLines = {}
-            
-            -- Extract this batch of lines
-            for j = startIdx, endIdx do
-                table.insert(batchLines, lines[j])
-            end
-            
-            -- Process this batch
-            local batchContent = table.concat(batchLines, "\n")
-            local batchResult = parser(batchContent, database, sourceName, source.cause) 
-            result = result + batchResult
-            
-            -- Update progress
-            processedEntries = endIdx
-            local progressPct = math.floor((processedEntries / totalEntries) * 100)
-            Tasks.message = string.format("Processing %s: %d%% (%d entries added)",
-                sourceName, progressPct, result)
-                
-            -- Let UI update
-            coroutine.yield()
-        end
-    else
-        -- Use the parser directly
-        result = parser(sourceRawData, database, source)
-    end
-    
-    -- Clear data to save memory
+    -- Clear data and force memory cleanup
     sourceRawData = nil
-    collectgarbage("collect")
+    Fetcher.Memory.ForceCleanup()
     
     return result
 end
 
--- Main fetch function with improved anti-ban protection and progress tracking
+-- Main fetch function with improved memory management
 function Fetcher.FetchAll(database, callback, silent)
     -- If already running, don't start again
     if Tasks.isRunning then
@@ -190,11 +209,16 @@ function Fetcher.FetchAll(database, callback, silent)
         return false
     end
     
-    -- Initialize UI tracking with batch precision
-    Fetcher.UI.totalSources = #Fetcher.Sources
-    Fetcher.UI.completedSources = 0
-    Fetcher.UI.currentProgress = 0
-    Fetcher.UI.targetProgress = 0
+    -- Force initial cleanup
+    Fetcher.Memory.ForceCleanup()
+    
+    -- Initialize UI tracking with weak references
+    Fetcher.UI = setmetatable({
+        targetProgress = 0,
+        currentProgress = 0, 
+        completedSources = 0,
+        totalSources = #Fetcher.Sources
+    }, {__mode = "v"})
     
     -- Initialize the task system
     Tasks.Reset()
@@ -202,7 +226,7 @@ function Fetcher.FetchAll(database, callback, silent)
     Tasks.callback = callback
     Tasks.silent = silent or false
     
-    -- Create a main task that processes all sources with proper delays
+    -- Create a main task that processes all sources with proper memory management
     local mainTask = coroutine.create(function()
         local totalAdded = 0
         
@@ -214,6 +238,9 @@ function Fetcher.FetchAll(database, callback, silent)
             
             -- Update UI tracking
             Fetcher.UI.targetProgress = (i - 1) / Fetcher.UI.totalSources * 100
+            
+            -- Check memory before each source
+            Fetcher.Memory.Check()
             
             -- Yield to update UI
             coroutine.yield()
@@ -233,11 +260,11 @@ function Fetcher.FetchAll(database, callback, silent)
                 end
             end
             
-            -- Now fetch the actual source with proper batch processing
+            -- Process the source with memory-efficient batching
             Tasks.message = "Fetching from " .. source.name
             local count = 0
             
-            -- Use the batch processor for better progress tracking
+            -- Use the batch processor for better memory management
             local success, result = pcall(function()
                 return Fetcher.ProcessSourceInBatches(source, database)
             end)
@@ -257,11 +284,11 @@ function Fetcher.FetchAll(database, callback, silent)
             Fetcher.UI.completedSources = i
             Fetcher.UI.targetProgress = i / Fetcher.UI.totalSources * 100
             
+            -- Force cleanup after each source
+            Fetcher.Memory.ForceCleanup()
+            
             -- Yield to update UI
             coroutine.yield()
-            
-            -- Apply a shorter delay after processing to let UI update
-            Tasks.Sleep(0.5)
         end
         
         -- Finalize
@@ -272,11 +299,26 @@ function Fetcher.FetchAll(database, callback, silent)
         -- Update last fetch time
         Fetcher.Config.LastAutoFetch = os.time()
         
+        -- Final cleanup
+        Fetcher.Memory.ForceCleanup()
+        
+        -- Safely handle database save outside coroutine
+        if totalAdded > 0 and Fetcher.Config.AutoSaveAfterFetch then
+            -- The database should be saved by the callback, not here
+            -- Just mark as dirty and let the database handle it
+            if database.State then
+                database.State.isDirty = true
+            end
+        end
+        
         return totalAdded
     end)
     
-    -- Register the main task processor
+    -- Register the main task processor with enhanced memory management
     callbacks.Register("Draw", "FetcherMainTask", function()
+        -- Check memory every frame
+        Fetcher.Memory.Check()
+        
         -- Process the main task if it's not finished
         if coroutine.status(mainTask) ~= "dead" then
             -- Resume the main task
@@ -286,6 +328,7 @@ function Fetcher.FetchAll(database, callback, silent)
                 -- Handle error in main task
                 print("[Database Fetcher] Error: " .. tostring(result))
                 Tasks.Reset()
+                Fetcher.Memory.ForceCleanup()
                 callbacks.Unregister("Draw", "FetcherMainTask")
             end
             
@@ -302,12 +345,29 @@ function Fetcher.FetchAll(database, callback, silent)
             -- Task is complete, clean up
             callbacks.Unregister("Draw", "FetcherMainTask")
             
-            -- Run completion callback
+            -- Run completion callback with safety measures
             local _, result = coroutine.resume(mainTask)
             local totalAdded = tonumber(result) or 0
             
+            -- Handle callback with separate coroutine to prevent overflow
             if type(callback) == "function" then
-                pcall(callback, totalAdded)
+                -- Run callback in next frame to prevent stack overflow
+                local callbackTask = coroutine.create(function()
+                    pcall(callback, totalAdded)
+                end)
+                
+                -- Register a one-time callback processor
+                callbacks.Register("Draw", "FetcherCallback", function()
+                    callbacks.Unregister("Draw", "FetcherCallback")
+                    
+                    local callbackSuccess = pcall(coroutine.resume, callbackTask)
+                    if not callbackSuccess then
+                        print("[Database Fetcher] Warning: Callback failed")
+                        
+                        -- Emergency cleanup if callback fails
+                        Fetcher.Memory.EmergencyCleanup()
+                    end
+                end)
             end
             
             -- Show notification if enabled
@@ -324,6 +384,9 @@ function Fetcher.FetchAll(database, callback, silent)
                     callbacks.Unregister("Draw", "FetcherCleanup")
                 end
             end)
+            
+            -- Ensure complete memory cleanup
+            Fetcher.Memory.ForceCleanup()
         end
     end)
     
@@ -342,14 +405,25 @@ function Fetcher.AutoFetch(database)
         database = db
     end
     
-    -- Start fetch with silent mode
+    -- Start fetch with silent mode and safe save handling
     return Fetcher.FetchAll(database, function(totalAdded)
-        if totalAdded > 0 and Fetcher.Config.AutoSaveAfterFetch then
-            database.SaveDatabase()
+        -- Only force save if we have a meaningful number of entries
+        if totalAdded and totalAdded > 0 then
+            -- First clean memory to avoid overflow during save
+            collectgarbage("collect")
             
-            if Fetcher.Config.NotifyOnFetchComplete then
-                printc(80, 200, 120, 255, "[Database] Auto-updated with " .. totalAdded .. " new entries")
-            end
+            -- Delay save to next frame to avoid stack overflow
+            callbacks.Register("Draw", "DatabaseSaveDelay", function()
+                callbacks.Unregister("Draw", "DatabaseSaveDelay")
+                
+                pcall(function() 
+                    database.SaveDatabase() 
+                    
+                    if Fetcher.Config.NotifyOnFetchComplete then
+                        printc(80, 200, 120, 255, "[Database] Auto-updated with " .. totalAdded .. " new entries")
+                    end
+                end)
+            end)
         end
     end, not Fetcher.Config.ShowProgressBar)
 end

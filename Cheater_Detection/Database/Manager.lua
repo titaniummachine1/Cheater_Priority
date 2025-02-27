@@ -4,11 +4,12 @@
 ]]
 
 -- Import required components
-local Database = require("Cheater_Detection.Database.Database")
-local Fetcher = require("Cheater_Detection.Database.Database_Fetcher")
 local Common = require("Cheater_Detection.Utils.Common")
 local Commands = Common.Lib.Utils.Commands
+-- Import database components directly, don't use variable assignments yet
+local Json = Common.Json
 
+-- Create the Manager object
 local Manager = {}
 
 -- Configuration options
@@ -21,6 +22,10 @@ Manager.Config = {
 
 -- Initialize database system completely
 function Manager.Initialize(options)
+    -- Import other modules *inside* the function to prevent circular dependencies
+    local Database = require("Cheater_Detection.Database.Database")
+    local Fetcher = require("Cheater_Detection.Database.Database_Fetcher")
+    
     options = options or {}
     
     -- Override default config with provided options
@@ -55,23 +60,37 @@ end
 
 -- Add a new data source
 function Manager.AddSource(name, url, cause, type)
-    return Fetcher.AddSource(name, url, cause, type or "raw")
+    -- Import Fetcher only when needed to avoid circular dependencies
+    local Fetcher = require("Cheater_Detection.Database.Database_Fetcher")
+    local Sources = require("Cheater_Detection.Database.Database_Fetcher.Sources")
+    
+    return Sources.AddSource(name, url, cause, type or "raw")
 end
 
 -- Force an immediate database update
 function Manager.ForceUpdate()
+    local Database = require("Cheater_Detection.Database.Database")
     Database.FetchUpdates(false)
 end
 
 -- Get database stats 
 function Manager.GetStats()
+    local Database = require("Cheater_Detection.Database.Database")
+    local Fetcher = require("Cheater_Detection.Database.Database_Fetcher")
+    
+    -- Use a weak table for temporary statistics storage
+    local byType = setmetatable({}, {__mode = "v"})
     local entries = 0
-    local byType = {}
     
     for steamId, data in pairs(Database.content or {}) do
         entries = entries + 1
         local cause = data.cause or "Unknown"
         byType[cause] = (byType[cause] or 0) + 1
+        
+        -- Yield periodically if there are many entries
+        if entries % 5000 == 0 then
+            coroutine.yield()
+        end
     end
     
     return {
@@ -82,84 +101,40 @@ function Manager.GetStats()
     }
 end
 
--- Register database management commands
-Commands.Register("cd_db_stats", function()
-    local stats = Manager.GetStats()
-    print(string.format("[Database Manager] Total entries: %d", stats.totalEntries))
-    print("[Database Manager] Entries by type:")
-    for cause, count in pairs(stats.byType) do
-        print(string.format("  - %s: %d", cause, count))
-    end
-    print(string.format("[Database Manager] Last fetch: %s", os.date("%Y-%m-%d %H:%M:%S", stats.lastFetch)))
-end, "Show database statistics")
-
--- Update database command
-Commands.Register("cd_update", function()
-    Manager.ForceUpdate()
-end, "Update the cheater database from online sources")
-
--- Purge old database entries to improve performance
-Commands.Register("cd_cleanup", function()
-    if not Database.content then
-        print("[Database Manager] No database loaded")
-        return
-    end
-    
-    local beforeCount = 0
-    for _ in pairs(Database.content) do
-        beforeCount = beforeCount + 1
-    end
-    
-    -- Keep track of entries to remove
-    local toRemove = {}
-    local twoWeeksAgo = os.time() - (14 * 24 * 60 * 60) -- 14 days ago
-    
-    -- Find old entries
-    for steamId, data in pairs(Database.content) do
-        -- If entry has a date, check if it's older than 2 weeks
-        -- and doesn't have special causes we want to keep
-        if data.date then
-            -- Try to parse the date
-            local year, month, day = data.date:match("(%d+)%-(%d+)%-(%d+)")
-            if year and month and day then
-                local entryTime = os.time({
-                    year = tonumber(year),
-                    month = tonumber(month),
-                    day = tonumber(day),
-                    hour = 0, min = 0, sec = 0
-                })
-                
-                -- Exclude certain categories from cleanup
-                local keepCause = data.cause and (
-                    data.cause:match("Bot") or
-                    data.cause:match("RGL") or
-                    data.cause:match("Community")
-                )
-                
-                -- Mark for removal if old and not a special case
-                if entryTime < twoWeeksAgo and not keepCause then
-                    table.insert(toRemove, steamId)
-                end
-            end
+-- Register commands later to avoid loading modules immediately
+local function RegisterCommands()
+    Commands.Register("cd_db_stats", function()
+        -- Import modules only when the command is called
+        local stats = Manager.GetStats()
+        print(string.format("[Database Manager] Total entries: %d", stats.totalEntries))
+        print("[Database Manager] Entries by type:")
+        for cause, count in pairs(stats.byType) do
+            print(string.format("  - %s: %d", cause, count))
         end
-    end
-    
-    -- Remove old entries
-    for _, steamId in ipairs(toRemove) do
-        Database.content[steamId] = nil
-    end
-    
-    -- Save the cleaned database
-    Database.SaveDatabase()
-    
-    -- Count entries after cleanup
-    local afterCount = 0
-    for _ in pairs(Database.content) do
-        afterCount = afterCount + 1
-    end
-    
-    print(string.format("[Database Manager] Removed %d old entries, keeping %d entries", 
-        beforeCount - afterCount, afterCount))
-end, "Remove old database entries to improve performance")
+        print(string.format("[Database Manager] Last fetch: %s", os.date("%Y-%m-%d %H:%M:%S", stats.lastFetch)))
+    end, "Show database statistics")
+
+    Commands.Register("cd_update", function()
+        Manager.ForceUpdate()
+    end, "Update the cheater database from online sources")
+
+    Commands.Register("cd_cleanup", function()
+        local Database = require("Cheater_Detection.Database.Database")
+        
+        if not Database.content then
+            print("[Database Manager] No database loaded")
+            return
+        end
+        
+        Database.Cleanup()
+        print("[Database Manager] Cleanup completed")
+    end, "Remove unnecessary database entries to improve performance")
+end
+
+-- Register commands without loading modules immediately
+callbacks.Register("Draw", "CDDatabaseManager_RegisterCommands", function()
+    RegisterCommands()
+    callbacks.Unregister("Draw", "CDDatabaseManager_RegisterCommands")
+end)
 
 return Manager

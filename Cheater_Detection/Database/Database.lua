@@ -45,31 +45,56 @@ Database.content = setmetatable({}, {
     end
 })
 
--- Handle setting an entry with proper counting
+-- Handle setting an entry with optimized record updating
 function Database.HandleSetEntry(key, value)
-    -- Count entries if adding/removing
-    if (Database.data[key] == nil) and value ~= nil then
-        Database.State.entriesCount = Database.State.entriesCount + 1
-    elseif (Database.data[key] ~= nil) and value == nil then
-        Database.State.entriesCount = Database.State.entriesCount - 1
+    -- Skip nil values or invalid keys
+    if not key then return end
+    
+    -- Get existing entry
+    local existing = Database.data[key]
+    
+    -- If removing an entry
+    if value == nil then
+        if existing then
+            Database.data[key] = nil
+            Database.State.entriesCount = Database.State.entriesCount - 1
+            Database.State.isDirty = true
+        end
+        return
     end
-
-    -- Simplified data structure - keep only what's needed
-    if value ~= nil then
-        -- Ensure we only store essential data
-        local minimalValue = {
+    
+    -- If adding a new entry
+    if not existing then
+        -- Simplified data structure - keep only what's needed
+        Database.data[key] = {
             Name = type(value) == "table" and (value.Name or "Unknown") or "Unknown",
             proof = type(value) == "table" and (value.proof or value.cause or "Unknown") or "Unknown"
         }
-        Database.data[key] = minimalValue
+        
+        Database.State.entriesCount = Database.State.entriesCount + 1
+        Database.State.isDirty = true
     else
-        Database.data[key] = nil
+        -- Update existing entry but only if the new data has better information
+        if type(value) == "table" then
+            -- Only update name if the new name is better
+            if value.Name and value.Name ~= "Unknown" and 
+               (not existing.Name or existing.Name == "Unknown") then
+                existing.Name = value.Name
+                Database.State.isDirty = true
+            end
+            
+            -- Only update proof if the new proof is better
+            local newProof = value.proof or value.cause
+            if newProof and newProof ~= "Unknown" and 
+               (not existing.proof or existing.proof == "Unknown") then
+                existing.proof = newProof
+                Database.State.isDirty = true
+            end
+        end
     end
-
-    Database.State.isDirty = true
-
+    
     -- Auto-save if enabled and enough time has passed
-    if Database.Config.AutoSave then
+    if Database.Config.AutoSave and Database.State.isDirty then
         local currentTime = os.time()
         if currentTime - Database.State.lastSave >= Database.Config.SaveInterval then
             Database.SaveDatabase()
@@ -105,7 +130,7 @@ function Database.GetFilePath()
     return "./database.json"
 end
 
--- Save database to disk with batch writing and progress tracking
+-- Save database to disk with optimized line-by-line writing to prevent overflow
 function Database.SaveDatabase()
     -- Create a save task to run in coroutine
     local saveTask = coroutine.create(function()
@@ -118,6 +143,17 @@ function Database.SaveDatabase()
             G.UI.ShowMessage("Saving database...")
         end
         
+        -- Skip saving if no entries or not dirty
+        if Database.State.entriesCount == 0 then
+            print("[Database] No entries to save")
+            return true
+        end
+        
+        if not Database.State.isDirty then
+            print("[Database] Database is not dirty, skipping save")
+            return true
+        end
+        
         -- Stage 1: Create a temporary file
         local tempFile = io.open(tempPath, "w")
         if not tempFile then
@@ -125,17 +161,18 @@ function Database.SaveDatabase()
             return false
         end
         
-        -- Write opening JSON bracket
+        -- Write opening JSON bracket without using Json.encode
         tempFile:write("{\n")
         
-        -- Stage 2: Process entries in batches
-        local entries = {}
-        for steamID, entry in pairs(Database.data) do
-            table.insert(entries, {id = steamID, data = entry})
+        -- Stage 2: Convert entries to direct strings and write in batches
+        -- This avoids creating tables that the JSON encoder would need to process
+        local steamIDs = {}
+        for steamID in pairs(Database.data) do
+            table.insert(steamIDs, steamID)
         end
         
-        local totalEntries = #entries
-        local batchSize = 500 -- Process 500 entries at a time
+        local totalEntries = #steamIDs
+        local batchSize = 200 -- Smaller batches to avoid memory issues
         local batches = math.ceil(totalEntries / batchSize)
         
         for batchIndex = 1, batches do
@@ -151,19 +188,23 @@ function Database.SaveDatabase()
             -- Allow UI to update
             coroutine.yield()
             
-            -- Process this batch
+            -- Process this batch directly as strings
             for i = startIdx, endIdx do
-                local entry = entries[i]
-                if entry and entry.id then
-                    local steamID = entry.id
-                    local data = entry.data
+                local steamID = steamIDs[i]
+                local entry = Database.data[steamID]
+                
+                if entry and type(entry) == "table" then
+                    -- Sanitize strings for JSON safety
+                    local name = entry.Name or "Unknown"
+                    local proof = entry.proof or "Unknown"
                     
-                    -- Serialize this entry
+                    -- Escape quotes and control characters
+                    name = name:gsub('"', '\\"'):gsub('[\r\n\t]', ' ')
+                    proof = proof:gsub('"', '\\"'):gsub('[\r\n\t]', ' ')
+                    
+                    -- Build JSON entry manually without encoder
                     local jsonEntry = string.format('"%s":{"Name":"%s","proof":"%s"}', 
-                        steamID,
-                        (data.Name or "Unknown"):gsub('"', '\\"'),
-                        (data.proof or "Unknown"):gsub('"', '\\"')
-                    )
+                        steamID, name, proof)
                     
                     -- Add comma for all except the last entry
                     if i < totalEntries then
@@ -172,37 +213,71 @@ function Database.SaveDatabase()
                         jsonEntry = jsonEntry .. "\n"
                     end
                     
-                    -- Write to file
+                    -- Write directly to file without table operations
                     tempFile:write(jsonEntry)
                 end
             end
             
-            -- Force flush the batch
+            -- Force flush the batch to disk
             tempFile:flush()
             
-            -- Clean up memory after each batch
-            collectgarbage("step", 100)
+            -- Clear memory after each batch
+            steamIDs[batchIndex] = nil  -- Allow previous batch to be GC'd
+            collectgarbage("step", 200)
         end
         
         -- Write closing JSON bracket
         tempFile:write("}")
         tempFile:close()
         
-        -- Stage 3: Backup current file if it exists
-        local currentFile = io.open(filePath, "r")
-        if currentFile then
-            local content = currentFile:read("*a")
-            currentFile:close()
-            
-            local backupFile = io.open(backupPath, "w")
-            if backupFile then
-                backupFile:write(content)
-                backupFile:close()
+        -- Stage 3: Safely replace the original file
+        -- First create a backup if the original file exists
+        local success, backupErr = pcall(function()
+            local existingFile = io.open(filePath, "r")
+            if existingFile then
+                local content = existingFile:read("*a")
+                existingFile:close()
+                
+                if content and #content > 0 then
+                    local backupFile = io.open(backupPath, "w")
+                    if backupFile then
+                        backupFile:write(content)
+                        backupFile:close()
+                    end
+                end
             end
+        end)
+        
+        if not success then
+            print("[Database] Warning: Could not create backup: " .. tostring(backupErr))
         end
         
-        -- Stage 4: Rename temporary file to actual file
-        local success = os.rename(tempPath, filePath)
+        -- Replace file using atomic operation when possible
+        local replaceSuccess = os.rename(tempPath, filePath)
+        
+        -- If rename failed, try copy and delete approach
+        if not replaceSuccess then
+            -- Read temp file
+            local tempContent = nil
+            local tempReader = io.open(tempPath, "r")
+            if tempReader then
+                tempContent = tempReader:read("*a")
+                tempReader:close()
+                
+                -- Write to actual file
+                if tempContent then
+                    local actualWriter = io.open(filePath, "w")
+                    if actualWriter then
+                        actualWriter:write(tempContent)
+                        actualWriter:close()
+                        replaceSuccess = true
+                        
+                        -- Clean up temp file
+                        os.remove(tempPath)
+                    end
+                end
+            end
+        end
         
         -- Update state
         Database.State.isDirty = false
@@ -217,7 +292,11 @@ function Database.SaveDatabase()
                 Database.State.entriesCount, filePath))
         end
         
-        return success
+        -- Clean up memory before returning
+        steamIDs = nil
+        collectgarbage("collect")
+        
+        return replaceSuccess
     end)
     
     -- Run the save coroutine
@@ -245,49 +324,98 @@ function Database.SaveDatabase()
     return true
 end
 
--- Fallback save method that uses simpler approach for reliability
+-- Fallback save method with chunking to avoid memory issues
 function Database.FallbackSave()
     print("[Database] Using fallback save method")
     
-    local filePath = Database.GetFilePath()
-    local success = pcall(function()
-        -- Open file
+    -- Create a fallback task to run in coroutine
+    local fallbackTask = coroutine.create(function()
+        local filePath = Database.GetFilePath()
+        
+        -- Attempt to save in direct chunks without using Json.encode
         local file = io.open(filePath, "w")
         if not file then
-            error("Failed to open file for writing")
+            print("[Database] Fallback: Failed to open file for writing")
+            return false
         end
         
-        -- Build a simpler JSON structure
+        -- Build JSON manually in chunks
         file:write("{\n")
         
-        local count = 0
-        local total = 0
-        for steamID in pairs(Database.data) do total = total + 1 end
+        -- Count entries first to know when to add comma
+        local totalEntries = 0
+        for _ in pairs(Database.data) do
+            totalEntries = totalEntries + 1
+        end
         
-        for steamID, entry in pairs(Database.data) do
-            count = count + 1
-            local data = string.format('"%s":{"Name":"%s","proof":"%s"}%s\n',
-                steamID,
-                (entry.Name or "Unknown"):gsub('"', '\\"'),
-                (entry.proof or "Unknown"):gsub('"', '\\"'),
-                count < total and "," or ""
-            )
-            file:write(data)
+        -- Process entries in smaller batches
+        local entriesProcessed = 0
+        local batchSize = 100 -- Smaller batch for fallback mode
+        
+        -- Get all keys
+        local keys = {}
+        for steamID in pairs(Database.data) do
+            table.insert(keys, steamID)
+        end
+        
+        -- Process in batches
+        for i = 1, #keys, batchSize do
+            local endIdx = math.min(i + batchSize - 1, #keys)
+            
+            -- Process this batch
+            for j = i, endIdx do
+                local steamID = keys[j]
+                local entry = Database.data[steamID]
+                
+                entriesProcessed = entriesProcessed + 1
+                
+                -- Basic string escaping for safety
+                local name = (entry.Name or "Unknown"):gsub('"', '\\"')
+                local proof = (entry.proof or "Unknown"):gsub('"', '\\"')
+                
+                -- Format as JSON directly
+                local line = string.format('"%s":{"Name":"%s","proof":"%s"}%s\n',
+                    steamID, name, proof,
+                    entriesProcessed < totalEntries and "," or ""
+                )
+                
+                file:write(line)
+            end
+            
+            -- Yield to let UI update
+            coroutine.yield()
         end
         
         file:write("}")
         file:close()
-    end)
-    
-    if success then
-        print("[Database] Fallback save successful")
+        
+        -- Update state
         Database.State.isDirty = false
         Database.State.lastSave = os.time()
+        
+        -- Clean up memory
+        keys = nil
+        collectgarbage("collect")
+        
+        print("[Database] Fallback save completed successfully")
         return true
-    else
-        print("[Database] Fallback save failed")
-        return false
-    end
+    end)
+    
+    -- Process the fallback task with error handling
+    callbacks.Register("Draw", "DatabaseFallbackSave", function()
+        if coroutine.status(fallbackTask) ~= "dead" then
+            local success, result = pcall(coroutine.resume, fallbackTask)
+            
+            if not success then
+                print("[Database] Fallback save error: " .. tostring(result))
+                callbacks.Unregister("Draw", "DatabaseFallbackSave")
+            end
+        else
+            callbacks.Unregister("Draw", "DatabaseFallbackSave")
+        end
+    end)
+    
+    return true
 end
 
 -- Load database from disk

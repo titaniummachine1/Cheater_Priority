@@ -21,19 +21,13 @@ Sources.List = {
     {
         name = "d3fc0n6 Cheater List",
         url = "https://raw.githubusercontent.com/d3fc0n6/CheaterList/main/CheaterFriend/64ids",
-        cause = "Cheater",
+        cause = "Cheater Friend",
         parser = "raw"
     },
     {
         name = "d3fc0n6 Tacobot List",
         url = "https://raw.githubusercontent.com/d3fc0n6/TacobotList/master/64ids",
         cause = "Tacobot",
-        parser = "raw"
-    },
-    {
-        name = "d3fc0n6 Pazer List",
-        url = "https://raw.githubusercontent.com/d3fc0n6/TacobotList/master/64ids",
-        cause = "Pazer List",
         parser = "raw"
     },
     {
